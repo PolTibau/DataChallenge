@@ -1,0 +1,7 @@
+pandas>=2.0
+numpy>=1.24
+pyarrow>=14.0        # backend parquet
+scikit-learn>=1.3    # opcional, per si vols comparar amb sklearn KNN
+tqdm>=4.65           # barra de progrés
+matplotlib>=3.7      # visualitzacions
+jupyter>=1.0         # notebooks d'exploració
