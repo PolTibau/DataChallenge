@@ -263,14 +263,16 @@ def evaluate_params(params: dict,
     min_overlap    = params["min_overlap"]
     gaussian_sigma = params.get("gaussian_sigma", 1.0)
 
-    # Normalitzar la matriu de referència amb el norm_method del trial
-    ref_norm   = normalize_matrix_rows(X_ref.values.T.astype(float), norm_method)
-    ref_values = X_ref.values.T.astype(float)
+    # Seleccionar només columnes numèriques (descarta timestamps si estan com a columna)
+    X_ref_num  = X_ref.select_dtypes(include="number")
+    ref_mat    = X_ref_num.to_numpy(dtype=float).T   # (n_ref, T)
+    ref_norm   = normalize_matrix_rows(ref_mat, norm_method)
+    ref_values = ref_mat
 
     all_errors = []
     for col in eval_cols:
-        original   = y_train[col].values.astype(float)
-        holed_real = X_holed[col].values.astype(float)
+        original   = y_train[col].to_numpy(dtype=float)
+        holed_real = X_holed[col].to_numpy(dtype=float)
 
         holed_sim, sim_mask = simulate_holes(holed_real, SIMULATED_HOLE_RATIO, rng)
         if sim_mask.sum() == 0:

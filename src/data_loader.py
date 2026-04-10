@@ -11,10 +11,28 @@ from src.config import HOLED_PREFIX
 
 
 def load_parquet(path: Path | str) -> pd.DataFrame:
-    """Carrega un fitxer parquet i assegura que l'índex és DatetimeIndex."""
+    """
+    Carrega un fitxer parquet, assegura que l'índex és DatetimeIndex
+    i descarta qualsevol columna no numèrica (p.ex. timestamps exportats
+    accidentalment com a columna de dades).
+    """
     df = pd.read_parquet(path)
+
+    # Si l'índex no és DatetimeIndex, intentar convertir-lo
     if not isinstance(df.index, pd.DatetimeIndex):
-        df.index = pd.to_datetime(df.index)
+        try:
+            df.index = pd.to_datetime(df.index)
+        except Exception:
+            pass
+
+    # Eliminar columnes no numèriques (timestamps, strings...)
+    # que de vegades s'exporten com a columna en lloc d'índex
+    non_numeric = df.select_dtypes(exclude="number").columns.tolist()
+    if non_numeric:
+        print(f"[data_loader] Descartant {len(non_numeric)} columna/es no numèrica/es: "
+              f"{non_numeric[:3]}{'...' if len(non_numeric) > 3 else ''}")
+        df = df.drop(columns=non_numeric)
+
     df.sort_index(inplace=True)
     return df
 
