@@ -1,64 +1,93 @@
-# Enedis — KNN Imputation of Electric Load Curves
+# Enedis — Imputació de Corbes de Consum Elèctric
 
-Solució al challenge d'imputació de corbes de consum elèctric sintètiques d'Enedis.
+Dos models comparats per al challenge d'imputació de corbes sintètiques d'Enedis.
 
 ## Estructura
 
 ```
-enedis-imputation/
-├── data/                        # Dades (no pujar al repo)
-│   ├── X_train.parquet
-│   ├── y_train.parquet
-│   ├── X_test.parquet
-│   └── new_output_sample.parquet
-├── src/
-│   ├── config.py                # Paràmetres globals
-│   ├── data_loader.py           # Càrrega de parquets
-│   ├── preprocessor.py          # Normalització i anàlisi de forats
-│   ├── knn_imputer.py           # Algorisme KNN principal
-│   └── evaluator.py             # MAE i visualitzacions
-├── outputs/                     # Prediccions generades
-├── notebooks/
-│   └── exploration.ipynb
-├── main_train.py                # Avaluació sobre train (amb MAE)
-├── main_predict.py              # Predicció final sobre test
-└── requirements.txt
+data_challenge/
+│
+├── data/                        ← CSV compartits entre els dos models
+│   ├── X_train.csv
+│   ├── y_train.csv
+│   └── X_test.csv
+│
+├── outputs/
+│   ├── knn/                     ← prediccions KNN
+│   └── lstm/                    ← prediccions Transformer
+│
+├── src/                         ← mòduls compartits
+│   ├── data_loader.py           ← càrrega CSV + save_submission
+│   └── evaluator.py             ← MAE, visualitzacions, comparació models
+│
+├── knn/                         ← model KNN
+│   ├── src/
+│   │   ├── config.py            ← paràmetres KNN
+│   │   ├── preprocessor.py      ← normalització
+│   │   └── knn_imputer.py       ← algorisme KNN
+│   ├── main_train.py
+│   ├── main_predict.py
+│   └── optimize_hyperparams.py  ← Bayesian optimization (Optuna)
+│
+├── lstm/                        ← model Transformer
+│   ├── src/
+│   │   ├── config.py            ← paràmetres Transformer
+│   │   ├── dataset.py           ← PyTorch Dataset amb masking
+│   │   ├── model.py             ← arquitectura Transformer
+│   │   └── trainer.py           ← entrenament + early stopping
+│   ├── checkpoints/             ← pesos del model
+│   ├── main_train.py
+│   └── main_predict.py
+│
+├── requirements.txt
+└── README.md
 ```
 
 ## Instal·lació
 
 ```bash
+# PyTorch amb CUDA (GPU NVIDIA)
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Resta de dependències
 pip install -r requirements.txt
 ```
 
 ## Ús
 
-### 1. Avaluació sobre train
+Tots els scripts s'executen des de l'arrel `data_challenge/`:
+
 ```bash
-python main_train.py
+# ── KNN ──────────────────────────────────────────────────────
+# Optimitzar hiperparàmetres (opcional, ~1h)
+python -m knn.optimize_hyperparams
+
+# Avaluar sobre train + guardar prediccions
+python -m knn.main_train
+
+# Generar submissió test
+python -m knn.main_predict
+
+# ── Transformer ───────────────────────────────────────────────
+# Entrenar (~30-60 min amb GPU)
+python -m lstm.main_train
+
+# Generar submissió test
+python -m lstm.main_predict
 ```
-Genera `outputs/y_pred_train.parquet` i imprimeix el MAE vs. ground truth.
 
-### 2. Predicció final (submissió)
-```bash
-python main_predict.py
-```
-Genera `outputs/y_pred_test.parquet` llest per enviar.
+## Models
 
-## Algorisme
+### KNN
+Cerca les K corbes de referència més similars (usant distància Manhattan
+sobre els timesteps vàlids) i omple els forats amb una mitjana ponderada
+per rang. Ràpid i interpretable, però tracta cada timestep de forma independent.
 
-Per a cada corba `holed_i` amb forats:
-1. Calcula la distància euclidiana vs. totes les corbes de referència, usant **només** els timesteps vàlids (no-NaN).
-2. Selecciona els **K veïns** més propers.
-3. Omple cada forat amb la **mitjana ponderada** (pes = 1/distància) dels K veïns.
+### Transformer (Temporal Masked Autoencoder)
+Aprèn la dinàmica temporal de les corbes entrenant sobre les 20.000 corbes
+de referència senceres. Usa masking aleatori durant l'entrenament per aprendre
+a reconstruir forats. L'atenció global permet capturar dependències de llarg
+termini (patrons diaris, setmanals).
 
-## Paràmetres ajustables (`src/config.py`)
-
-| Paràmetre        | Default     | Descripció                              |
-|------------------|-------------|-----------------------------------------|
-| `K_NEIGHBORS`    | 10          | Nombre de veïns                         |
-| `MIN_OVERLAP`    | 50          | Timesteps mínims comuns per distància   |
-| `DISTANCE_METRIC`| euclidean   | `euclidean` o `cosine`                  |
-| `WEIGHTING`      | inverse     | `inverse` (1/dist) o `uniform`          |
-| `NORMALIZE`      | True        | Normalitzar abans de calcular distàncies|
-| `NORM_METHOD`    | zscore      | `zscore` o `minmax`                     |
+## Mètrica
+MAE en watts, calculat NOMÉS sobre els punts que eren NaN originalment.
