@@ -11,27 +11,29 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 OUT_DIR  = ROOT_DIR / "outputs"
 
-X_TRAIN_PATH    = DATA_DIR / "X_train.parquet"
-Y_TRAIN_PATH    = DATA_DIR / "y_train.parquet"
-X_TEST_PATH     = DATA_DIR / "X_test.parquet"
-SAMPLE_PATH     = DATA_DIR / "new_output_sample.parquet"
+# Fitxers d'entrada en format CSV
+X_TRAIN_PATH = DATA_DIR / "X_train.csv"
+Y_TRAIN_PATH = DATA_DIR / "y_train.csv"
+X_TEST_PATH  = DATA_DIR / "X_test.csv"
 
-PRED_TRAIN_PATH = OUT_DIR / "y_pred_train.parquet"
-PRED_TEST_PATH  = OUT_DIR / "y_pred_test.parquet"
+# Fitxers de sortida
+PRED_TRAIN_PATH = OUT_DIR / "y_pred_train.csv"
+PRED_TEST_PATH  = OUT_DIR / "y_pred_test.csv"
 
 # ── Identificació de columnes ─────────────────────────────────────────────────
-HOLED_PREFIX = "holed_"       # prefix de les columnes a predir
+HOLED_PREFIX  = "holed_"       # prefix de les columnes a predir
+INDEX_COL     = "Horodate"     # columna de timestamps als CSV
 
 # ── KNN ───────────────────────────────────────────────────────────────────────
-K_NEIGHBORS     = 8          # nombre de veïns més propers
-MIN_OVERLAP     = 33          # mínim de timesteps comuns per calcular distància vàlida
-DISTANCE_METRIC = "manhattan" # "euclidean" | "cosine" | "manhattan" | "chebyshev"
-WEIGHTING       = "rank"   # "inverse" | "uniform" | "softmax" | "rank" | "gaussian"
-GAUSSIAN_SIGMA  = 1.0         # σ del kernel gaussian (només si WEIGHTING="gaussian")
+K_NEIGHBORS     = 8
+MIN_OVERLAP     = 33
+DISTANCE_METRIC = "manhattan"  # "euclidean" | "cosine" | "manhattan" | "chebyshev"
+WEIGHTING       = "rank"       # "inverse" | "uniform" | "softmax" | "rank" | "gaussian"
+GAUSSIAN_SIGMA  = 1.0
 
 # ── Preprocessament ───────────────────────────────────────────────────────────
-NORMALIZE   = True            # normalitzar cada corba abans de calcular distàncies
-NORM_METHOD = "none"        # "zscore" | "robust" | "minmax" | "none"
+NORMALIZE   = True
+NORM_METHOD = "none"           # "zscore" | "robust" | "minmax" | "none"
 
 # ── Reproducibilitat ──────────────────────────────────────────────────────────
 RANDOM_SEED = 42

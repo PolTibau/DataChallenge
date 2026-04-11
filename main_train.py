@@ -1,26 +1,43 @@
 """
 main_train.py
 -------------
-Script principal per entrenar/avaluar sobre el conjunt de train.
+Avaluació sobre el conjunt de train.
+
+Execució:
+    python main_train.py
+
+Genera:
+    outputs/y_pred_train.csv
 """
 
 import pandas as pd
 import numpy as np
-from pathlib import Path
-import sys
-
-for mod in list(sys.modules.keys()):
-    if mod.startswith("src."):
-        del sys.modules[mod]
 
 from src.config import (
     X_TRAIN_PATH, Y_TRAIN_PATH, PRED_TRAIN_PATH, OUT_DIR,
-    K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA,
+    K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA, INDEX_COL,
 )
 from src.data_loader  import load_train
 from src.preprocessor import get_nan_mask
 from src.knn_imputer  import impute_all
-from src.evaluator    import print_summary
+
+
+def compute_mae(y_train, y_pred, nan_mask):
+    """MAE sobre els punts imputats, ignorant posicions on y_train és NaN."""
+    cols = [c for c in y_pred.columns if c in y_train.columns]
+    errors = []
+    skipped = 0
+    for col in cols:
+        mask = nan_mask[col].values.astype(bool)
+        if mask.sum() == 0:
+            continue
+        tv = y_train[col].values[mask]
+        pv = y_pred[col].values[mask]
+        valid = ~(np.isnan(tv) | np.isnan(pv))
+        skipped += (~valid).sum()
+        if valid.sum() > 0:
+            errors.extend(np.abs(tv[valid] - pv[valid]).tolist())
+    return errors, int(skipped)
 
 
 def main():
@@ -41,54 +58,40 @@ def main():
     )
 
     print("\n── Resultats ──")
-
-    # Resetar índex per garantir alineació per posició
     y_pred_r   = y_pred.reset_index(drop=True)
     y_train_r  = y_train.reset_index(drop=True)
     nan_mask_r = nan_mask.reset_index(drop=True)
 
-    zero_curves = (y_pred_r == 0).all()
-    print(f"  Corbes 100% zeros: {zero_curves.sum()}")
+    errors, skipped = compute_mae(y_train_r, y_pred_r, nan_mask_r)
 
-    # MAE inline — comprova NaN a y_train i y_pred
-    cols = [c for c in y_pred_r.columns if c in y_train_r.columns]
-    errors = []
-    nan_ytrain, nan_ypred = 0, 0
-    for col in cols:
+    mae_curves = {}
+    for col in [c for c in y_pred_r.columns if c in y_train_r.columns]:
         mask = nan_mask_r[col].values.astype(bool)
         if mask.sum() == 0:
             continue
         tv = y_train_r[col].values[mask]
         pv = y_pred_r[col].values[mask]
-        nan_ytrain += int(np.isnan(tv).sum())
-        nan_ypred  += int(np.isnan(pv).sum())
         valid = ~(np.isnan(tv) | np.isnan(pv))
         if valid.sum() > 0:
-            errors.extend(np.abs(tv[valid] - pv[valid]).tolist())
+            mae_curves[col] = float(np.mean(np.abs(tv[valid] - pv[valid])))
+    s = pd.Series(mae_curves)
 
-    print(f"  NaN a y_train on mask=True: {nan_ytrain}")
-    print(f"  NaN a y_pred  on mask=True: {nan_ypred}")
-    print(f"  Punts avaluats: {len(errors):,}")
-    if errors:
-        print(f"  MAE total (inline): {np.mean(errors):.2f} W")
-        mae_curves = {}
-        for col in cols:
-            mask = nan_mask_r[col].values.astype(bool)
-            if mask.sum() == 0:
-                continue
-            tv = y_train_r[col].values[mask]
-            pv = y_pred_r[col].values[mask]
-            valid = ~(np.isnan(tv) | np.isnan(pv))
-            if valid.sum() > 0:
-                mae_curves[col] = float(np.mean(np.abs(tv[valid] - pv[valid])))
-        s = pd.Series(mae_curves)
-        print(f"  MAE mitjà/corba  : {s.mean():.2f} W")
-        print(f"  MAE mediana/corba: {s.median():.2f} W")
-        print(f"  Pitjor corba     : {s.idxmax()} ({s.max():.2f} W)")
-        print(f"  Millor corba     : {s.idxmin()} ({s.min():.2f} W)")
+    print("=" * 50)
+    print(f"  MAE total        : {np.mean(errors):.2f} W")
+    print(f"  MAE mitjà/corba  : {s.mean():.2f} W")
+    print(f"  MAE mediana/corba: {s.median():.2f} W")
+    print(f"  Pitjor corba     : {s.idxmax()} ({s.max():.2f} W)")
+    print(f"  Millor corba     : {s.idxmin()} ({s.min():.2f} W)")
+    if skipped > 0:
+        print(f"  Punts omesos (NaN al ground truth): {skipped}")
+    print("=" * 50)
 
+    # Guardar — Horodate com a primera columna, index=False
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    y_pred.to_parquet(PRED_TRAIN_PATH, index=True)
+    y_pred_csv = y_pred.copy()
+    y_pred_csv.index = X_holed.index.strftime("%Y-%m-%d %H:%M:%S")
+    y_pred_csv.index.name = INDEX_COL
+    y_pred_csv.to_csv(PRED_TRAIN_PATH, index=True)
     print(f"\nPrediccions guardades a: {PRED_TRAIN_PATH}")
 
 
