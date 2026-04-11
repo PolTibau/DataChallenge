@@ -11,8 +11,6 @@ import ctypes
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Impedeix que Windows entri en repòs durant l'entrenament
-ctypes.windll.kernel32.SetThreadExecutionState(0x80000002)
 
 import numpy as np
 import pandas as pd
@@ -106,10 +104,6 @@ def main():
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamps = X_holed.index.strftime("%Y-%m-%d %H:%M:%S").values
     save_submission(y_pred, PRED_TRAIN_PATH, timestamps)
-
-    # Restaurar comportament normal de repòs
-    ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
-    print("\nEntrenament completat. El sistema pot tornar a entrar en repòs.")
 
 
 if __name__ == "__main__":
