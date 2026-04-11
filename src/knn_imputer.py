@@ -77,9 +77,11 @@ def _cosine_distances(ref_norm: np.ndarray,
 def _get_distances(ref_norm: np.ndarray,
                    target: np.ndarray,
                    valid_mask: np.ndarray,
-                   metric: str = DISTANCE_METRIC) -> np.ndarray:
+                   metric: str = DISTANCE_METRIC,
+                   override_min_overlap: int | None = None) -> np.ndarray:
     """Dispatcher de mètriques de distància."""
-    if valid_mask.sum() < MIN_OVERLAP:
+    min_ov = override_min_overlap if override_min_overlap is not None else MIN_OVERLAP
+    if valid_mask.sum() < min_ov:
         return np.full(ref_norm.shape[0], np.inf)
     if metric == "euclidean":
         return _euclidean_distances(ref_norm, target, valid_mask)
@@ -156,6 +158,12 @@ def impute_column(holed_series: pd.Series,
         return result
 
     target = holed_series.values.copy().astype(float)
+
+    # Cas extrem: corba gairebé tota NaN (no podem normalitzar)
+    if valid_mask.sum() == 0:
+        result[:] = 0
+        return result
+
     mu  = np.nanmean(target)
     sig = np.nanstd(target)
     if sig == 0:
@@ -167,8 +175,33 @@ def impute_column(holed_series: pd.Series,
     finite_mask = np.isfinite(distances)
     k_use = min(k, finite_mask.sum())
 
+    # Si no hi ha prou veïns, reduïm progressivament min_overlap fins a 1
     if k_use == 0:
+        for relaxed_overlap in [20, 10, 5, 1]:
+            distances_relaxed = _get_distances(
+                X_ref_norm, target_norm, valid_mask, metric,
+                override_min_overlap=relaxed_overlap
+            )
+            finite_relaxed = np.isfinite(distances_relaxed)
+            if finite_relaxed.sum() > 0:
+                distances = distances_relaxed
+                finite_mask = finite_relaxed
+                k_use = min(k, finite_mask.sum())
+                break
+
+    if k_use == 0:
+        # Fallback: interpolació lineal per forats interiors
         result = result.interpolate(method="linear", limit_direction="both")
+        # Per forats als extrems que la interpolació no pot omplir,
+        # usem la mitjana de les corbes de referència en aquell timestep
+        # (equivalent a KNN amb K=tots els veïns, ponderat uniformement)
+        still_nan = result.isna()
+        if still_nan.any():
+            ref_means = pd.Series(
+                X_ref_values[:, still_nan.values].mean(axis=0),
+                index=result.index[still_nan.values]
+            )
+            result[still_nan] = ref_means
         return result
 
     top_k_idx  = np.argpartition(distances, k_use)[:k_use]
@@ -191,9 +224,10 @@ def impute_all(X_holed: pd.DataFrame,
     Imputa totes les columnes holed_ de X_holed usant KNN sobre X_ref.
     """
     print(f"[knn_imputer] Normalitzant {X_ref.shape[1]:,} corbes de referència...")
-    X_ref_norm_df = normalize(X_ref)
-    X_ref_norm    = X_ref_norm_df.values.T.astype(float)
-    X_ref_values  = X_ref.values.T.astype(float)
+    X_ref_num     = X_ref.select_dtypes(include="number")
+    X_ref_norm_df = normalize(X_ref_num)
+    X_ref_norm    = X_ref_norm_df.to_numpy(dtype=float).T   # (n_ref, T)
+    X_ref_values  = X_ref_num.to_numpy(dtype=float).T       # (n_ref, T)
 
     print(f"[knn_imputer] Imputant {X_holed.shape[1]:,} corbes  "
           f"K={k} | metric='{metric}' | weighting='{weighting}'...")

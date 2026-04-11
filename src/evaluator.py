@@ -19,38 +19,63 @@ def compute_mae(y_true: pd.DataFrame,
                 nan_mask: pd.DataFrame) -> float:
     """
     MAE sobre els punts imputats (on nan_mask és True).
-
-    Paràmetres
-    ----------
-    y_true   : ground truth (corbes completes)
-    y_pred   : prediccions (corbes imputades)
-    nan_mask : màscara booleana, True = punt que era NaN i s'ha imputat
-
-    Retorna
-    -------
-    float : MAE en watts
+    Treballa columna per columna per posició, independent de l'índex.
     """
-    true_vals = y_true.values[nan_mask.values]
-    pred_vals = y_pred.values[nan_mask.values]
-    mae = np.mean(np.abs(true_vals - pred_vals))
-    return float(mae)
+    cols = [c for c in y_pred.columns
+            if c in y_true.columns and c in nan_mask.columns]
+    if not cols:
+        print("[evaluator] AVÍS: cap columna en comú entre y_true i y_pred.")
+        return float("nan")
+
+    true_list, pred_list = [], []
+    nan_in_pred = 0
+
+    for col in cols:
+        mask = nan_mask[col].values.astype(bool)
+        if mask.sum() == 0:
+            continue
+        tv = y_true[col].values[mask]
+        pv = y_pred[col].values[mask]
+        # Ignorar posicions on y_pred és NaN (fallback fallit)
+        valid = ~np.isnan(pv)
+        nan_in_pred += (~valid).sum()
+        if valid.sum() == 0:
+            continue
+        true_list.append(tv[valid])
+        pred_list.append(pv[valid])
+
+    if nan_in_pred > 0:
+        print(f"[evaluator] AVÍS: {nan_in_pred} valors NaN a y_pred "
+              f"(fallback incomplet en algunes posicions).")
+
+    if not true_list:
+        print("[evaluator] AVÍS: cap punt imputat vàlid per calcular MAE.")
+        return float("nan")
+
+    return float(np.mean(np.abs(
+        np.concatenate(true_list) - np.concatenate(pred_list)
+    )))
 
 
 def compute_mae_per_curve(y_true: pd.DataFrame,
                           y_pred: pd.DataFrame,
                           nan_mask: pd.DataFrame) -> pd.Series:
-    """
-    MAE individual per cada corba holed_. Útil per detectar corbes difícils.
-    """
+    """MAE individual per cada corba holed_."""
     maes = {}
-    for col in y_true.columns:
-        mask = nan_mask[col].values
+    for col in y_pred.columns:
+        if col not in y_true.columns or col not in nan_mask.columns:
+            continue
+        mask = nan_mask[col].values.astype(bool)
         if mask.sum() == 0:
             maes[col] = np.nan
             continue
-        maes[col] = float(np.mean(np.abs(
-            y_true[col].values[mask] - y_pred[col].values[mask]
-        )))
+        tv = y_true[col].values[mask]
+        pv = y_pred[col].values[mask]
+        valid = ~np.isnan(pv)
+        if valid.sum() == 0:
+            maes[col] = np.nan
+            continue
+        maes[col] = float(np.mean(np.abs(tv[valid] - pv[valid])))
     return pd.Series(maes)
 
 
@@ -75,30 +100,17 @@ def plot_curve(col: str,
                y_pred: pd.DataFrame,
                y_true: pd.DataFrame | None = None,
                n_points: int = 200) -> None:
-    """
-    Visualitza una corba holed_ mostrant:
-      - Valors originals (punts coneguts)
-      - Imputació KNN
-      - Ground truth (si disponible)
-
-    Paràmetres
-    ----------
-    col      : nom de la columna (ex: 'holed_42')
-    n_points : limitar a n_points timesteps per llegibilitat
-    """
+    """Visualitza una corba holed_ amb la imputació i el ground truth."""
     fig, ax = plt.subplots(figsize=(14, 4))
+    idx  = X_holed.index[:n_points]
+    orig = X_holed[col].iloc[:n_points]
+    pred = y_pred[col].iloc[:n_points]
 
-    idx   = X_holed.index[:n_points]
-    orig  = X_holed[col].iloc[:n_points]
-    pred  = y_pred[col].iloc[:n_points]
-
-    # Valors coneguts (no eren NaN)
     known_mask = orig.notna()
     ax.plot(idx, pred, color="steelblue", lw=1.2, label="KNN imputació", zorder=2)
     ax.scatter(idx[known_mask], orig[known_mask],
                color="black", s=6, zorder=3, label="Valors coneguts")
 
-    # Ground truth si disponible
     if y_true is not None and col in y_true.columns:
         ax.plot(idx, y_true[col].iloc[:n_points],
                 color="tomato", lw=1.0, ls="--", alpha=0.8,

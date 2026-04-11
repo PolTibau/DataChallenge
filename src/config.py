@@ -23,15 +23,15 @@ PRED_TEST_PATH  = OUT_DIR / "y_pred_test.parquet"
 HOLED_PREFIX = "holed_"       # prefix de les columnes a predir
 
 # ── KNN ───────────────────────────────────────────────────────────────────────
-K_NEIGHBORS     = 10          # nombre de veïns més propers
-MIN_OVERLAP     = 50          # mínim de timesteps comuns per calcular distància vàlida
-DISTANCE_METRIC = "euclidean" # "euclidean" | "cosine" | "manhattan" | "chebyshev"
-WEIGHTING       = "inverse"   # "inverse" | "uniform" | "softmax" | "rank" | "gaussian"
+K_NEIGHBORS     = 8          # nombre de veïns més propers
+MIN_OVERLAP     = 33          # mínim de timesteps comuns per calcular distància vàlida
+DISTANCE_METRIC = "manhattan" # "euclidean" | "cosine" | "manhattan" | "chebyshev"
+WEIGHTING       = "rank"   # "inverse" | "uniform" | "softmax" | "rank" | "gaussian"
 GAUSSIAN_SIGMA  = 1.0         # σ del kernel gaussian (només si WEIGHTING="gaussian")
 
 # ── Preprocessament ───────────────────────────────────────────────────────────
 NORMALIZE   = True            # normalitzar cada corba abans de calcular distàncies
-NORM_METHOD = "zscore"        # "zscore" | "robust" | "minmax" | "none"
+NORM_METHOD = "none"        # "zscore" | "robust" | "minmax" | "none"
 
 # ── Reproducibilitat ──────────────────────────────────────────────────────────
 RANDOM_SEED = 42

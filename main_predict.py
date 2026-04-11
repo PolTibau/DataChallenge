@@ -13,10 +13,10 @@ Genera:
 import pandas as pd
 from src.config import (
     X_TEST_PATH, PRED_TEST_PATH, OUT_DIR,
-    K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING
+    K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA,
 )
-from src.data_loader  import load_test
-from src.knn_imputer  import impute_all
+from src.data_loader import load_test
+from src.knn_imputer import impute_all
 
 
 def main():
@@ -27,16 +27,17 @@ def main():
     # ── 2. Imputació KNN ─────────────────────────────────────────────────────
     print("\n── Imputació KNN ──")
     y_pred = impute_all(
-        X_holed  = X_holed,
-        X_ref    = X_ref,
-        k        = K_NEIGHBORS,
-        metric   = DISTANCE_METRIC,
-        weighting= WEIGHTING,
+        X_holed       = X_holed,
+        X_ref         = X_ref,
+        k             = K_NEIGHBORS,
+        metric        = DISTANCE_METRIC,
+        weighting     = WEIGHTING,
+        gaussian_sigma= GAUSSIAN_SIGMA,
     )
 
     # ── 3. Guardar prediccions ───────────────────────────────────────────────
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    y_pred.to_parquet(PRED_TEST_PATH)
+    y_pred.to_parquet(PRED_TEST_PATH, index=True)
     print(f"\nFitxer de submissió guardat a: {PRED_TEST_PATH}")
     print(f"Shape: {y_pred.shape}  |  NaN restants: {y_pred.isna().sum().sum()}")
 
