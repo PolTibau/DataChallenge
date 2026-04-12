@@ -56,14 +56,16 @@ class WarmupCosineScheduler:
 
 
 def train(curves_norm: np.ndarray,
-          device: torch.device) -> TemporalMaskedAutoencoder:
+          device: torch.device,
+          n_epochs_override: int | None = None) -> TemporalMaskedAutoencoder:
     """
     Entrena el Transformer sobre les corbes de referència.
 
     Paràmetres
     ----------
-    curves_norm : (N_ref, T) corbes normalitzades sense NaN
-    device      : torch.device
+    curves_norm       : (N_ref, T) corbes normalitzades sense NaN
+    device            : torch.device
+    n_epochs_override : si s'indica, sobreescriu N_EPOCHS (útil per debug)
 
     Retorna
     -------
@@ -71,6 +73,8 @@ def train(curves_norm: np.ndarray,
     """
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
+
+    n_epochs = n_epochs_override if n_epochs_override is not None else N_EPOCHS
 
     # DataLoaders
     full_ds = TimeSeriesDataset(curves_norm, augment=True, seed=RANDOM_SEED)
@@ -95,7 +99,7 @@ def train(curves_norm: np.ndarray,
 
     optimizer   = torch.optim.AdamW(model.parameters(), lr=LR,
                                     weight_decay=WEIGHT_DECAY)
-    total_steps = N_EPOCHS * len(train_loader)
+    total_steps = n_epochs * len(train_loader)
     scheduler   = WarmupCosineScheduler(optimizer, LR_WARMUP_STEPS, total_steps, LR)
 
     best_val_mae  = float("inf")
@@ -106,7 +110,7 @@ def train(curves_norm: np.ndarray,
           f"{'LR':>10} {'Time':>7} {'':>10}")
     print("─" * 62)
 
-    for epoch in range(1, N_EPOCHS + 1):
+    for epoch in range(1, n_epochs + 1):
         t0 = time.time()
 
         # Train

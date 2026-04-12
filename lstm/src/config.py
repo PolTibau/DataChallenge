@@ -49,5 +49,11 @@ GRAD_CLIP       = 1.0
 PATIENCE        = 8
 VAL_SPLIT       = 0.1
 
+# ── Mode de prova (posa DEBUG=True per verificar que tot funciona) ────────────
+# Entrena 2 èpoques sobre 200 corbes → ~30 segons en CPU
+DEBUG           = False
+DEBUG_N_CURVES  = 200    # corbes de referència a usar en mode debug
+DEBUG_N_EPOCHS  = 2      # èpoques en mode debug
+
 # ── Reproducibilitat ──────────────────────────────────────────────────────────
 RANDOM_SEED = 42
