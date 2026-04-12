@@ -56,10 +56,12 @@ from lstm.src.trainer import masked_mae_loss, WarmupCosineScheduler
 from lstm.src.dataset import TimeSeriesDataset
 from src.data_loader  import load_test
 
+
+
 # ── Configuració del fine-tuning ──────────────────────────────────────────────
-N_FINETUNE_EPOCHS = 10     # èpoques de fine-tuning (menys que l'entrenament original)
-LR_FINETUNE       = 2e-5   # LR molt baix per no destruir el que ha après
-PATIENCE_FT       = 4      # early stopping del fine-tuning
+N_FINETUNE_EPOCHS = 25     # èpoques de fine-tuning (menys que l'entrenament original)
+LR_FINETUNE       = 3e-5   # LR molt baix per no destruir el que ha après
+PATIENCE_FT       = 6      # early stopping del fine-tuning
 FINETUNE_CKPT     = CKPT_DIR / "finetuned_model.pt"
 
 
