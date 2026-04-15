@@ -43,6 +43,7 @@ try:
 except AttributeError:
     _windows = False
 import pandas as pd
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
