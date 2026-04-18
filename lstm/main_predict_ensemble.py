@@ -68,27 +68,23 @@ def load_model(ckpt_path: Path, d_model: int, n_heads: int,
                n_enc: int, n_dec: int, d_ff: int,
                device: torch.device):
     """Carrega un model amb arquitectura específica."""
-    from lstm.src.config import DROPOUT, MAX_SEQ_LEN
-    from lstm.src.model  import TemporalMaskedAutoencoder
+    from lstm.src.config import DROPOUT, MAX_SEQ_LEN, SEQ_LEN
+    from lstm.src.model  import TemporalMaskedAutoencoder, PATCH_SIZE
 
-    # Sobreescriure paràmetres d'arquitectura temporalment
-    import lstm.src.config as cfg
-    orig = (cfg.D_MODEL, cfg.N_HEADS, cfg.N_ENC_LAYERS,
-            cfg.N_DEC_LAYERS, cfg.D_FF)
+    # Instanciar directament amb els paràmetres correctes
+    model = TemporalMaskedAutoencoder(
+        seq_len   = SEQ_LEN,
+        patch_size = PATCH_SIZE,
+        d_model   = d_model,
+        n_heads   = n_heads,
+        n_enc     = n_enc,
+        n_dec     = n_dec,
+        d_ff      = d_ff,
+        dropout   = DROPOUT,
+    ).to(device)
 
-    cfg.D_MODEL      = d_model
-    cfg.N_HEADS      = n_heads
-    cfg.N_ENC_LAYERS = n_enc
-    cfg.N_DEC_LAYERS = n_dec
-    cfg.D_FF         = d_ff
-
-    model = TemporalMaskedAutoencoder().to(device)
     model.load_state_dict(
         torch.load(ckpt_path, map_location=device, weights_only=True))
-
-    # Restaurar configuració original
-    (cfg.D_MODEL, cfg.N_HEADS, cfg.N_ENC_LAYERS,
-     cfg.N_DEC_LAYERS, cfg.D_FF) = orig
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Paràmetres: {n_params:,}")
