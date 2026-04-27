@@ -26,14 +26,15 @@ import torch
 from torch.utils.data import DataLoader
 
 from lstm.src.config import (
-    X_TEST_PATH, PRED_TEST_PATH, OUT_DIR, CKPT_DIR, BATCH_SIZE,
+    X_TEST_PATH, X_TRAIN_PATH, Y_TRAIN_PATH, PRED_TEST_PATH, OUT_DIR, CKPT_DIR, BATCH_SIZE,
 )
 from lstm.src.model   import TemporalMaskedAutoencoder
 from lstm.src.trainer import predict_batch
-from lstm.src.dataset import InferenceDataset
-from src.data_loader  import load_test, save_submission
+from lstm.src.dataset import InferenceDataset, compute_global_stats
+from src.data_loader  import load_test, load_train, save_submission
 
 COMBINED_CKPT = CKPT_DIR / "best_model_combined.pt"
+PRED_TEST_PATH = PRED_TEST_PATH
 
 
 def normalize_holed(X_holed: pd.DataFrame) -> tuple:
@@ -59,26 +60,49 @@ def main():
     print(f"Device: {device}")
 
     # ── Carregar model combinat ───────────────────────────────────────────────
-    if not COMBINED_CKPT.exists():
+    import lstm.main_predict_combined as _self
+    ckpt = _self.COMBINED_CKPT
+    pred_path = _self.PRED_TEST_PATH
+
+    if not ckpt.exists():
         raise FileNotFoundError(
-            f"No s'ha trobat '{COMBINED_CKPT}'.\n"
+            f"No s'ha trobat '{ckpt}'.\n"
             f"Executa primer: python -m lstm.main_train_combined")
 
-    print(f"\nCarregant model combinat: {COMBINED_CKPT}")
+    print(f"\nCarregant model: {ckpt}")
     model = TemporalMaskedAutoencoder().to(device)
     model.load_state_dict(
-        torch.load(COMBINED_CKPT, map_location=device, weights_only=True))
+        torch.load(ckpt, map_location=device, weights_only=True))
     print("Model carregat correctament.")
 
-    # ── Carregar X_test holed_ ────────────────────────────────────────────────
-    print("\n── Carregant dades de test ──")
-    _, X_holed = load_test(X_TEST_PATH)
+    # ── Carregar dades per calcular global_stats (necessari per profiles) ─────
+    print("\n── Carregant dades per global_stats ──")
+    X_ref_train, _, _ = load_train(X_TRAIN_PATH, Y_TRAIN_PATH)
+    X_ref_test, X_holed = load_test(X_TEST_PATH)
+
+    ref_train_raw = X_ref_train.select_dtypes("number").to_numpy(dtype=np.float32).T
+    ref_test_raw  = X_ref_test.select_dtypes("number").to_numpy(dtype=np.float32).T
+
+    # Eliminar corbes planes/NaN per calcular stats
+    def clean_raw(vals):
+        bad = np.isnan(vals).any(axis=1) | (vals.std(axis=1) < 1e-6)
+        return vals[~bad]
+
+    ref_all_raw  = np.concatenate([clean_raw(ref_train_raw),
+                                   clean_raw(ref_test_raw)], axis=0)
+    global_stats = compute_global_stats(ref_all_raw)
+    print(f"  global_stats calculats sobre {len(ref_all_raw):,} corbes")
+
+    # ── Normalitzar holed_ ────────────────────────────────────────────────────
     holed_norm, nan_masks, mus, sigmas = normalize_holed(X_holed)
+    holed_raw = X_holed.values.T.astype(np.float32)
 
     # ── Inferència ────────────────────────────────────────────────────────────
     print("\n── Inferència ──")
     inf_loader = DataLoader(
-        InferenceDataset(holed_norm, nan_masks),
+        InferenceDataset(holed_norm, nan_masks,
+                         curves_raw=holed_raw,
+                         global_stats=global_stats),
         batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
 
     preds_norm = predict_batch(model, inf_loader, device)
@@ -104,7 +128,7 @@ def main():
     y_pred = pd.DataFrame(preds_raw.T, columns=X_holed.columns)
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     timestamps = X_holed.index.strftime("%Y-%m-%d %H:%M:%S").values
-    save_submission(y_pred, PRED_TEST_PATH, timestamps)
+    save_submission(y_pred, pred_path, timestamps)
 
 
 if __name__ == "__main__":

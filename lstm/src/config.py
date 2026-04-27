@@ -62,7 +62,7 @@ LR_FINETUNE       = 3e-5
 PATIENCE_FT       = 6
 
 # ── Mode de prova ─────────────────────────────────────────────────────────────
-DEBUG          = False    # ← canvia a False per l'entrenament real nocturn
+DEBUG          = True    # ← canvia a False per l'entrenament real nocturn
 DEBUG_N_CURVES = 200
 DEBUG_N_EPOCHS = 2
 

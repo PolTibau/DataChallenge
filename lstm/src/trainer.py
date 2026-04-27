@@ -84,18 +84,21 @@ def train(curves_norm: np.ndarray,
           device: torch.device,
           n_epochs_override: int | None = None,
           ckpt_path: Path | None = None,
-          use_hybrid_loss: bool = True) -> TemporalMaskedAutoencoder:
+          use_hybrid_loss: bool = True,
+          curves_raw: np.ndarray | None = None,
+          global_stats: tuple | None = None) -> TemporalMaskedAutoencoder:
     """
     Entrena el Transformer sobre les corbes de referència.
 
     Paràmetres
     ----------
-    curves_norm       : (N_ref, T) corbes normalitzades sense NaN
-    device            : torch.device
+    curves_norm   : (N_ref, T) corbes normalitzades sense NaN
+    device        : torch.device
     n_epochs_override : sobreescriu N_EPOCHS (útil per debug)
-    ckpt_path         : path on guardar el millor model
-                        (per defecte usa BEST_CKPT del config)
-    use_hybrid_loss   : si True usa MAE+MSE, si False usa MAE pur
+    ckpt_path     : path on guardar el millor model
+    use_hybrid_loss : si True usa MAE+MSE, si False usa MAE pur
+    curves_raw    : (N_ref, T) corbes originals per calcular profiles
+    global_stats  : (mu_global, sigma_global, cv_global) per normalitzar profiles
     """
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
@@ -107,13 +110,15 @@ def train(curves_norm: np.ndarray,
     loss_name = "MAE+MSE" if use_hybrid_loss else "MAE"
 
     # DataLoaders
-    full_ds = TimeSeriesDataset(curves_norm, augment=True, seed=RANDOM_SEED)
+    full_ds = TimeSeriesDataset(curves_norm, augment=True, seed=RANDOM_SEED,
+                                curves_raw=curves_raw, global_stats=global_stats)
     n_val   = max(1, int(len(full_ds) * VAL_SPLIT))
     n_train = len(full_ds) - n_val
     train_ds, val_ds = random_split(
         full_ds, [n_train, n_val],
         generator=torch.Generator().manual_seed(RANDOM_SEED))
-    val_ds.dataset = TimeSeriesDataset(curves_norm, augment=False, seed=RANDOM_SEED + 1)
+    val_ds.dataset = TimeSeriesDataset(curves_norm, augment=False, seed=RANDOM_SEED + 1,
+                                       curves_raw=curves_raw, global_stats=global_stats)
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
                               shuffle=True,  num_workers=0, pin_memory=True)
@@ -151,8 +156,11 @@ def train(curves_norm: np.ndarray,
             inp, tgt, mask = (batch["input"].to(device),
                               batch["target"].to(device),
                               batch["mask"].to(device))
+            profile = batch.get("profile")
+            if profile is not None:
+                profile = profile.to(device)
             optimizer.zero_grad()
-            loss = loss_fn(model(inp, mask), tgt, mask)
+            loss = loss_fn(model(inp, mask, profile), tgt, mask)
             loss.backward()
             if GRAD_CLIP > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
@@ -168,7 +176,10 @@ def train(curves_norm: np.ndarray,
                 inp, tgt, mask = (batch["input"].to(device),
                                   batch["target"].to(device),
                                   batch["mask"].to(device))
-                val_losses.append(loss_fn(model(inp, mask), tgt, mask).item())
+                profile = batch.get("profile")
+                if profile is not None:
+                    profile = profile.to(device)
+                val_losses.append(loss_fn(model(inp, mask, profile), tgt, mask).item())
 
         train_loss = np.mean(train_losses)
         val_loss   = np.mean(val_losses)
@@ -179,6 +190,11 @@ def train(curves_norm: np.ndarray,
             best_val_mae  = val_loss
             patience_left = PATIENCE
             torch.save(model.state_dict(), best_ckpt)
+            # Còpia de seguretat a /kaggle/working/ si estem a Kaggle
+            kaggle_backup = Path('/kaggle/working') / best_ckpt.name
+            if Path('/kaggle/working').exists():
+                import shutil
+                shutil.copy(best_ckpt, kaggle_backup)
             status = "✓ millor"
         else:
             patience_left -= 1
@@ -187,6 +203,15 @@ def train(curves_norm: np.ndarray,
         torch.save(model.state_dict(), last_ckpt)
         print(f"{epoch:>6} {train_loss:>11.4f} {val_loss:>10.4f} "
               f"{lr_now:>10.2e} {elapsed:>6.1f}s {status:>10}")
+
+        # Backup periòdic a /kaggle/working/ cada 5 èpoques
+        # Permet recuperar el model si la sessió talla
+        if epoch % 5 == 0 or status == "✓ millor":
+            backup_dir = Path("/kaggle/working")
+            if backup_dir.exists():
+                import shutil
+                shutil.copy(best_ckpt, backup_dir / best_ckpt.name)
+                shutil.copy(last_ckpt, backup_dir / last_ckpt.name)
 
         if patience_left == 0:
             print(f"\nEarly stopping a l'època {epoch}.")
@@ -215,7 +240,10 @@ def predict_batch(model: TemporalMaskedAutoencoder,
     preds = []
     with torch.no_grad():
         for batch in loader:
-            inp  = batch["input"].to(device)
-            mask = batch["mask"].to(device)
-            preds.append(model(inp, mask).cpu().numpy())
+            inp     = batch["input"].to(device)
+            mask    = batch["mask"].to(device)
+            profile = batch.get("profile")
+            if profile is not None:
+                profile = profile.to(device)
+            preds.append(model(inp, mask, profile).cpu().numpy())
     return np.concatenate(preds, axis=0)
