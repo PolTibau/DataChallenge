@@ -31,38 +31,32 @@ LAST_CKPT       = CKPT_DIR / "last_model.pt"
 SEQ_LEN = 1057
 
 # ── Masking ───────────────────────────────────────────────────────────────────
-MASK_RATIO      = 0.22   # lleugerament més que 0.15, sense ser excessiu
+MASK_RATIO      = 0.25   # lleugerament més que 0.15, sense ser excessiu
 MASK_MIN_LEN    = 1
 MASK_MAX_LEN    = 96
 MASK_BLOCK_PROB = 0.7
 
 # ── Arquitectura ──────────────────────────────────────────────────────────────
-# Model gran — compromís CPU/qualitat
-D_MODEL      = 192   # era 128 — +50% capacitat
-N_HEADS      = 8     # 192 / 8 = 24 dims per cap (valid)
-N_ENC_LAYERS = 4
-N_DEC_LAYERS = 4
-D_FF         = 768   # típicament 4 × D_MODEL
+D_MODEL      = 256
+N_HEADS      = 8
+N_ENC_LAYERS = 6
+N_DEC_LAYERS = 6
+D_FF         = 1024
 DROPOUT      = 0.1
 MAX_SEQ_LEN  = 2048
 
 # ── Entrenament ───────────────────────────────────────────────────────────────
-BATCH_SIZE      = 32     # reduït per compensar model més gran en CPU
-N_EPOCHS        = 60
+BATCH_SIZE      = 64
+N_EPOCHS        = 85
 LR              = 1e-4
-LR_WARMUP_STEPS = 500
+LR_WARMUP_STEPS = 1000
 WEIGHT_DECAY    = 1e-5
 GRAD_CLIP       = 1.0
-PATIENCE        = 6      # para abans per evitar overfitting
+PATIENCE        = 10
 VAL_SPLIT       = 0.1
 
-# ── Fine-tuning ───────────────────────────────────────────────────────────────
-N_FINETUNE_EPOCHS = 20
-LR_FINETUNE       = 3e-5
-PATIENCE_FT       = 6
-
 # ── Mode de prova ─────────────────────────────────────────────────────────────
-DEBUG          = True    # ← canvia a False per l'entrenament real nocturn
+DEBUG          = False
 DEBUG_N_CURVES = 200
 DEBUG_N_EPOCHS = 2
 
