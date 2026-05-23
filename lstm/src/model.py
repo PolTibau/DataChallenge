@@ -1,23 +1,25 @@
 """
-lstm/src/model.py
------------------
+lstm/src/model.py — v3
+----------------------
 Temporal Masked Autoencoder basat en Transformer.
 
-Arquitectura v3 — millores sobre v2:
-  - PATCH_SIZE=4 (2h per patch) → més resolució temporal
-  - TimeEmbedding: hora del dia + dia setmana + flag laborable/cap de setmana
-  - ProfileEmbedding: mu + sigma + cv de la corba → el model sap si és
-    un client industrial o domèstic sense que li ho diguem explícitament
+Canvis v3 respecte v2:
+  - PATCH_SIZE=2 (1h per token) — màxima resolució temporal
+  - JointTimeEmbedding: hora × tipus_dia (96 entrades) en lloc de
+    sumar hour + weekday + workday per separat.
+    Captura interaccions: "8h dilluns laborable" ≠ "8h diumenge"
+  - ProfileEmbedding ampliat a 9 dimensions amb estadístiques de forma
+  - Suport per shift cíclic per Test-Time Augmentation
 
 Arquitectura
 ------------
-  Input (B, T) + Profile (B, 4)
-    → Patch Embedding  (patch_size timesteps → D_MODEL)
-    + Time Embedding   (hora + dia + laborable → D_MODEL)
-    + Profile Embedding (mu_norm, sigma_norm, cv_norm, weekend → D_MODEL)
+  Input (B, T) + Profile (B, 9)
+    → Patch Embedding (patch_size=2)        → (B, P, D)
+    + Joint Time Embedding (hora × diatipus) → (1, P, D)
+    + Profile Embedding (9 features)         → (B, 1, D)
     → Positional Encoding sinusoidal
-    → Encoder Transformer (N_ENC_LAYERS capes, N_HEADS caps)
-    → Decoder Transformer (N_DEC_LAYERS capes, N_HEADS caps)
+    → Encoder Transformer (8 capes, 8 caps, D=384)
+    → Decoder Transformer (8 capes, 8 caps, D=384)
     → Projecció de sortida → (B, T)
 """
 
@@ -26,13 +28,13 @@ import torch
 import torch.nn as nn
 from lstm.src.config import (
     D_MODEL, N_HEADS, N_ENC_LAYERS, N_DEC_LAYERS,
-    D_FF, DROPOUT, MAX_SEQ_LEN, SEQ_LEN,
+    D_FF, DROPOUT, MAX_SEQ_LEN, SEQ_LEN, PROFILE_DIM,
 )
 
-PATCH_SIZE     = 4    # 4 timesteps = 2 hores
-STEPS_PER_DAY = 48   # timesteps de 30min per dia
-START_WEEKDAY  = 0   # 2023-01-09 és dilluns (0=dilluns, 6=diumenge)
-PROFILE_DIM    = 4   # [mu_norm, sigma_norm, cv_norm, weekend_ratio]
+# NOU v3: PATCH_SIZE=2 (1h per patch)
+PATCH_SIZE     = 2
+STEPS_PER_DAY  = 48
+START_WEEKDAY  = 0   # 2023-01-09 és dilluns
 
 
 class PatchEmbedding(nn.Module):
@@ -53,61 +55,74 @@ class PatchEmbedding(nn.Module):
         return self.proj(x)
 
 
-class TimeEmbedding(nn.Module):
+class JointTimeEmbedding(nn.Module):
     """
-    Embedding temporal per patch.
+    NOU v3: Embedding conjunt hora × tipus_dia.
 
-    Tres components:
-      - Hora del dia     (0-47 slots de 30min) → aprenible
-      - Dia de la setmana (0-6)                → aprenible
-      - Flag laborable/cap de setmana (0 o 1)  → aprenible (2 valors)
+    En lloc de sumar embeddings separats (hora + dia + laborable), aquí
+    cada combinació (hora_del_dia, laborable/cap_de_setmana) té el seu
+    propi embedding. Això captura interaccions no-lineals:
 
-    El model aprèn que "dilluns 8h laborable" té un patró de consum
-    molt diferent de "dissabte 8h cap de setmana".
+      - "19h laborable" — pic vespre fort (clàssic domèstic després feina)
+      - "19h cap setmana" — patró diferent (sopar més tard, més variabilitat)
+      - "10h laborable" — pic baix (ningú a casa, no n'és consum)
+      - "10h cap setmana" — pic mig (gent llevada, esmorzant)
+
+    Total: 48 hores × 2 tipus = 96 entrades.
+
+    A més afegim un embedding aprenible de dia de la setmana per capturar
+    diferències entre dilluns i divendres dins de laborables, dissabte
+    i diumenge dins de cap de setmana.
     """
 
     def __init__(self, d_model=D_MODEL, patch_size=PATCH_SIZE, seq_len=SEQ_LEN):
         super().__init__()
         n_patches = math.ceil(seq_len / patch_size)
 
-        self.hour_embed     = nn.Embedding(STEPS_PER_DAY, d_model)
-        self.weekday_embed  = nn.Embedding(7, d_model)
-        self.is_work_embed  = nn.Embedding(2, d_model)  # 0=cap de setmana, 1=laborable
+        # NOU v3: embedding conjunt (hora × tipus_dia) = 96 entrades
+        # Index: hora * 2 + is_workday  (0..95)
+        self.hour_x_type_embed = nn.Embedding(STEPS_PER_DAY * 2, d_model)
+
+        # Mantenim weekday separat per capturar dilluns vs divendres
+        self.weekday_embed = nn.Embedding(7, d_model)
 
         # Precalcular índexs per cada patch
         patch_starts = torch.arange(n_patches) * patch_size
         hours        = (patch_starts % STEPS_PER_DAY).long()
         weekdays     = ((patch_starts // STEPS_PER_DAY + START_WEEKDAY) % 7).long()
-        is_workday   = (weekdays < 5).long()  # 0=dissabte/diumenge, 1=dilluns-divendres
+        is_workday   = (weekdays < 5).long()
 
-        self.register_buffer("hours",      hours)
-        self.register_buffer("weekdays",   weekdays)
-        self.register_buffer("is_workday", is_workday)
+        hour_x_type  = (hours * 2 + is_workday).long()  # 0..95
+
+        self.register_buffer("hour_x_type", hour_x_type)
+        self.register_buffer("weekdays",    weekdays)
 
     def forward(self, n_patches: int) -> torch.Tensor:
         """Retorna (1, n_patches, D_MODEL)."""
-        h = self.hour_embed(self.hours[:n_patches])
-        w = self.weekday_embed(self.weekdays[:n_patches])
-        d = self.is_work_embed(self.is_workday[:n_patches])
-        return (h + w + d).unsqueeze(0)
+        ht = self.hour_x_type_embed(self.hour_x_type[:n_patches])
+        wd = self.weekday_embed(self.weekdays[:n_patches])
+        return (ht + wd).unsqueeze(0)
 
 
 class ProfileEmbedding(nn.Module):
     """
-    Embedding de perfil de corba: [mu_norm, sigma_norm, cv_norm, weekend_ratio]
+    Embedding de perfil enriquit (9 dimensions).
 
-    Projecta 4 valors continus a D_MODEL dimensions via una xarxa de 2 capes.
-    El model aprèn quins valors de mu/sigma/cv corresponen a clients industrials
-    vs domèstics, i adapta la imputació en conseqüència.
+    v3: 9 features [mu, mad, cv, weekend_ratio, peak_ratio, skew,
+                    autocorr, p95, iqr]
 
-    L'embedding resultant (B, 1, D_MODEL) es suma a TOTS els patches de la
-    seqüència — és una condició global que afecta tota la reconstrucció.
+    Projecta a D_MODEL via xarxa de 3 capes amb activació GELU.
+    Resultat (B, 1, D) es suma a tots els patches com a condició global.
     """
 
     def __init__(self, profile_dim=PROFILE_DIM, d_model=D_MODEL, dropout=DROPOUT):
         super().__init__()
+        # NOU v3: xarxa més profunda per processar les 9 features
         self.proj = nn.Sequential(
-            nn.Linear(profile_dim, d_model),
+            nn.Linear(profile_dim, d_model // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, d_model),
             nn.GELU(),
             nn.Dropout(dropout),
             nn.Linear(d_model, d_model),
@@ -115,8 +130,8 @@ class ProfileEmbedding(nn.Module):
 
     def forward(self, profile: torch.Tensor) -> torch.Tensor:
         """
-        profile : (B, 4) — mu_norm, sigma_norm, cv_norm, weekend_ratio
-        retorna : (B, 1, D_MODEL) — sumar a tots els patches
+        profile : (B, 9)
+        retorna : (B, 1, D_MODEL)
         """
         return self.proj(profile).unsqueeze(1)
 
@@ -140,7 +155,7 @@ class SinusoidalPE(nn.Module):
 
 
 class TemporalMaskedAutoencoder(nn.Module):
-    """Transformer Masked Autoencoder per a imputació de sèries temporals."""
+    """Transformer Masked Autoencoder per a imputació de sèries temporals — v3."""
 
     def __init__(self,
                  seq_len=SEQ_LEN, patch_size=PATCH_SIZE, d_model=D_MODEL,
@@ -151,7 +166,7 @@ class TemporalMaskedAutoencoder(nn.Module):
         self.patch_size = patch_size
 
         self.patch_embed   = PatchEmbedding(seq_len, patch_size, d_model)
-        self.time_embed    = TimeEmbedding(d_model, patch_size, seq_len)
+        self.time_embed    = JointTimeEmbedding(d_model, patch_size, seq_len)
         self.profile_embed = ProfileEmbedding(PROFILE_DIM, d_model, dropout)
 
         self.n_patches = self.patch_embed.n_patches
@@ -193,34 +208,32 @@ class TemporalMaskedAutoencoder(nn.Module):
     def forward(self, x: torch.Tensor, mask: torch.Tensor,
                 profile: torch.Tensor | None = None) -> torch.Tensor:
         """
-        x       : (B, T) valors d'entrada (0.0 a posicions emmascarades)
-        mask    : (B, T) bool, True = emmascarat
-        profile : (B, 4) opcional — mu_norm, sigma_norm, cv_norm, weekend_ratio
-        →         (B, T) reconstrucció completa
+        x       : (B, T) valors d'entrada
+        mask    : (B, T) bool
+        profile : (B, 9)
+        retorna : (B, T)
         """
         B = x.size(0)
 
-        # Patch embedding + time embedding
-        x_patches = self.patch_embed(x)               # (B, P, D)
-        time_emb  = self.time_embed(self.n_patches)   # (1, P, D)
-        x_patches = x_patches + time_emb              # (B, P, D)
+        x_patches = self.patch_embed(x)                # (B, P, D)
+        time_emb  = self.time_embed(self.n_patches)    # (1, P, D)
+        x_patches = x_patches + time_emb               # (B, P, D)
 
-        # Profile embedding — condició global sumada a tots els patches
         if profile is not None:
-            prof_emb  = self.profile_embed(profile)   # (B, 1, D)
-            x_patches = x_patches + prof_emb          # broadcast: (B, P, D)
+            prof_emb  = self.profile_embed(profile)    # (B, 1, D)
+            x_patches = x_patches + prof_emb           # broadcast
 
-        patch_mask = self._to_patch_mask(mask)                      # (B, P)
+        patch_mask = self._to_patch_mask(mask)
         mask_tok   = self.mask_token.expand(B, self.n_patches, -1)
         x_enc      = torch.where(patch_mask.unsqueeze(-1), mask_tok, x_patches)
 
-        memory  = self.encoder(self.enc_pos(x_enc))                 # (B, P, D)
-        dec_out = self.decoder(self.dec_pos(x_patches), memory)     # (B, P, D)
+        memory  = self.encoder(self.enc_pos(x_enc))
+        dec_out = self.decoder(self.dec_pos(x_patches), memory)
 
-        out = self.output_proj(dec_out).reshape(B, -1)              # (B, T+pad)
+        out = self.output_proj(dec_out).reshape(B, -1)
         if self.pad > 0:
             out = out[:, :-self.pad]
-        return out                                                   # (B, T)
+        return out
 
 
 def count_parameters(model: nn.Module) -> int:

@@ -1,12 +1,13 @@
 """
-lstm/src/trainer.py
--------------------
+lstm/src/trainer.py — v3
+------------------------
 Entrenament i inferència del Transformer.
 
-Millores respecte la versió anterior:
-  - Checkpoint personalitzat: cada script pot guardar a un path diferent
-  - Pèrdua híbrida MAE + MSE: penalitza errors grans quadràticament
-    → millora especialment les corbes difícils com holed_644
+Canvis v3:
+  - train() accepta mask_dist per màscares realistes
+  - predict_batch_tta(): inferència amb Test-Time Augmentation
+    Múltiples passades amb shifts cíclics per reduir variància
+  - Logging millorat amb percentatge d'avenç
 """
 
 import time
@@ -20,6 +21,7 @@ from lstm.src.config import (
     BATCH_SIZE, N_EPOCHS, LR, LR_WARMUP_STEPS,
     WEIGHT_DECAY, GRAD_CLIP, PATIENCE, VAL_SPLIT,
     BEST_CKPT, LAST_CKPT, RANDOM_SEED,
+    TTA_N_PASSES, TTA_SHIFTS,
 )
 from lstm.src.dataset import TimeSeriesDataset
 from lstm.src.model   import TemporalMaskedAutoencoder, count_parameters
@@ -40,17 +42,15 @@ def masked_hybrid_loss(pred: torch.Tensor,
                        mask: torch.Tensor,
                        alpha: float = 0.7) -> torch.Tensor:
     """
-    Pèrdua híbrida: alpha × MAE + (1-alpha) × MSE
+    Pèrdua híbrida: alpha × MAE + (1-alpha) × RMSE
 
     El MAE és robust a outliers però no penalitza errors grans.
-    El MSE penalitza errors grans quadràticament → millora corbes difícils.
-
-    alpha=0.7: 70% MAE + 30% MSE (equilibri entre robustesa i penalització)
+    El RMSE penalitza errors grans quadràticament → millora corbes difícils.
     """
     diff = pred - target
     mae  = (torch.abs(diff) * mask.float()).sum() / mask.float().sum().clamp(min=1)
     mse  = ((diff ** 2)     * mask.float()).sum() / mask.float().sum().clamp(min=1)
-    return alpha * mae + (1 - alpha) * torch.sqrt(mse)   # RMSE per mantenir escala
+    return alpha * mae + (1 - alpha) * torch.sqrt(mse)
 
 
 # ── Scheduler ─────────────────────────────────────────────────────────────────
@@ -86,19 +86,14 @@ def train(curves_norm: np.ndarray,
           ckpt_path: Path | None = None,
           use_hybrid_loss: bool = True,
           curves_raw: np.ndarray | None = None,
-          global_stats: tuple | None = None) -> TemporalMaskedAutoencoder:
+          global_stats: dict | None = None,
+          mask_dist: dict | None = None) -> TemporalMaskedAutoencoder:
     """
-    Entrena el Transformer sobre les corbes de referència.
+    Entrena el Transformer.
 
-    Paràmetres
-    ----------
-    curves_norm   : (N_ref, T) corbes normalitzades sense NaN
-    device        : torch.device
-    n_epochs_override : sobreescriu N_EPOCHS (útil per debug)
-    ckpt_path     : path on guardar el millor model
-    use_hybrid_loss : si True usa MAE+MSE, si False usa MAE pur
-    curves_raw    : (N_ref, T) corbes originals per calcular profiles
-    global_stats  : (mu_global, sigma_global, cv_global) per normalitzar profiles
+    Paràmetres v3
+    -------------
+    mask_dist : distribució empírica de forats (per màscares realistes)
     """
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
@@ -107,31 +102,40 @@ def train(curves_norm: np.ndarray,
     best_ckpt = ckpt_path if ckpt_path is not None else BEST_CKPT
     last_ckpt = best_ckpt.parent / f"last_{best_ckpt.name}"
     loss_fn   = masked_hybrid_loss if use_hybrid_loss else masked_mae_loss
-    loss_name = "MAE+MSE" if use_hybrid_loss else "MAE"
+    loss_name = "MAE+RMSE" if use_hybrid_loss else "MAE"
 
     # DataLoaders
+    print("  Building training dataset (this includes profile computation)...")
     full_ds = TimeSeriesDataset(curves_norm, augment=True, seed=RANDOM_SEED,
-                                curves_raw=curves_raw, global_stats=global_stats)
+                                curves_raw=curves_raw, global_stats=global_stats,
+                                mask_dist=mask_dist)
     n_val   = max(1, int(len(full_ds) * VAL_SPLIT))
     n_train = len(full_ds) - n_val
     train_ds, val_ds = random_split(
         full_ds, [n_train, n_val],
         generator=torch.Generator().manual_seed(RANDOM_SEED))
-    val_ds.dataset = TimeSeriesDataset(curves_norm, augment=False, seed=RANDOM_SEED + 1,
-                                       curves_raw=curves_raw, global_stats=global_stats)
+
+    # Val sense augmentation
+    print("  Building validation dataset...")
+    val_full = TimeSeriesDataset(curves_norm, augment=False, seed=RANDOM_SEED + 1,
+                                 curves_raw=curves_raw, global_stats=global_stats,
+                                 mask_dist=mask_dist)
+    val_ds.dataset = val_full
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
                               shuffle=True,  num_workers=0, pin_memory=True)
     val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE,
                               shuffle=False, num_workers=0, pin_memory=True)
 
-    print(f"Train: {n_train:,} corbes  |  Val: {n_val:,} corbes")
+    print(f"\nTrain: {n_train:,} corbes  |  Val: {n_val:,} corbes")
     print(f"Batches per epoch: {len(train_loader)}")
     print(f"Loss: {loss_name}")
+    print(f"Mask distribution: {'empirical (60%) + uniform (40%)' if mask_dist else 'uniform'}")
 
     # Model
     model = TemporalMaskedAutoencoder().to(device)
-    print(f"Paràmetres entrenables: {count_parameters(model):,}")
+    n_params = count_parameters(model)
+    print(f"Paràmetres entrenables: {n_params:,}  ({n_params/1e6:.1f}M)")
 
     optimizer   = torch.optim.AdamW(model.parameters(), lr=LR,
                                     weight_decay=WEIGHT_DECAY)
@@ -190,7 +194,6 @@ def train(curves_norm: np.ndarray,
             best_val_mae  = val_loss
             patience_left = PATIENCE
             torch.save(model.state_dict(), best_ckpt)
-            # Còpia de seguretat a /kaggle/working/ si estem a Kaggle
             kaggle_backup = Path('/kaggle/working') / best_ckpt.name
             if Path('/kaggle/working').exists():
                 import shutil
@@ -204,8 +207,6 @@ def train(curves_norm: np.ndarray,
         print(f"{epoch:>6} {train_loss:>11.4f} {val_loss:>10.4f} "
               f"{lr_now:>10.2e} {elapsed:>6.1f}s {status:>10}")
 
-        # Backup periòdic a /kaggle/working/ cada 5 èpoques
-        # Permet recuperar el model si la sessió talla
         if epoch % 5 == 0 or status == "✓ millor":
             backup_dir = Path("/kaggle/working")
             if backup_dir.exists():
@@ -229,13 +230,7 @@ def train(curves_norm: np.ndarray,
 def predict_batch(model: TemporalMaskedAutoencoder,
                   loader: DataLoader,
                   device: torch.device) -> np.ndarray:
-    """
-    Inferència sobre un DataLoader.
-
-    Retorna
-    -------
-    preds : (N, T) prediccions en espai normalitzat
-    """
+    """Inferència simple (sense TTA)."""
     model.eval()
     preds = []
     with torch.no_grad():
@@ -247,3 +242,62 @@ def predict_batch(model: TemporalMaskedAutoencoder,
                 profile = profile.to(device)
             preds.append(model(inp, mask, profile).cpu().numpy())
     return np.concatenate(preds, axis=0)
+
+
+def predict_batch_tta(model: TemporalMaskedAutoencoder,
+                      loader: DataLoader,
+                      device: torch.device,
+                      n_passes: int = TTA_N_PASSES,
+                      shifts: list = TTA_SHIFTS) -> np.ndarray:
+    """
+    NOU v3: Inferència amb Test-Time Augmentation.
+
+    Per cada corba, fem n_passes prediccions amb shifts cíclics petits
+    i promitgem el resultat. Això redueix la variància del model perquè
+    cada shift veu els mateixos punts amb diferents posicions temporals.
+
+    El shift cíclic preserva l'estructura de la sèrie però canvia les
+    posicions on les features temporals (hora del dia) s'apliquen.
+    Important: les màscares també es desplacen junt amb les dades.
+
+    Després de cada predicció:
+      pred_shifted ← unshift(pred)
+    Promitgem totes les prediccions desplaçades de tornada a la posició
+    original.
+    """
+    model.eval()
+    all_preds = []
+
+    with torch.no_grad():
+        # Acumular per cada shift
+        shift_preds = {s: [] for s in shifts[:n_passes]}
+
+        for batch in loader:
+            inp     = batch["input"].to(device)
+            mask    = batch["mask"].to(device)
+            profile = batch.get("profile")
+            if profile is not None:
+                profile = profile.to(device)
+
+            # Predicció a cada shift
+            batch_preds = []
+            for shift in shifts[:n_passes]:
+                if shift == 0:
+                    inp_s, mask_s = inp, mask
+                else:
+                    inp_s  = torch.roll(inp,  shifts=shift, dims=1)
+                    mask_s = torch.roll(mask, shifts=shift, dims=1)
+
+                pred_s = model(inp_s, mask_s, profile)  # (B, T)
+
+                # Desfer el shift per alinear amb la posició original
+                if shift != 0:
+                    pred_s = torch.roll(pred_s, shifts=-shift, dims=1)
+
+                batch_preds.append(pred_s.cpu().numpy())
+
+            # Promitja sobre passades per aquest batch
+            avg = np.mean(batch_preds, axis=0)
+            all_preds.append(avg)
+
+    return np.concatenate(all_preds, axis=0)
