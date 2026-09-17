@@ -1,13 +1,13 @@
 """
-lstm/main_train_combined.py — v3
---------------------------------
-Entrena el Transformer v3 sobre X_train ref + X_test ref junts.
+lstm/main_train_combined.py — v3.1
+----------------------------------
+Entrena el Transformer v3.1 sobre X_train ref + X_test ref junts.
 
-Novetats v3:
-  - Profiles enriquits (9 dims) calculats sobre el conjunt combinat
-  - Distribució empírica de forats apresa de X_test holed_
-  - Normalització robusta (mediana / MAD)
-  - PATCH_SIZE=2 (1h), D_MODEL=384, més capes
+v3.1:
+  - Profile weekend/weekday load coherent
+  - Pèrdua MAE (mètrica del challenge)
+  - Model més petit (256 / 4+4) per reduir temps d'entrenament
+  - Val masks congelades + TTA per soroll
 
 Execució:
     cd data_challenge
@@ -128,10 +128,17 @@ def main():
     # ── 4. Estadístiques globals per profiles ───────────────────────────────
     global_stats = compute_global_stats(ref_combined_raw)
 
-    # ── 5. NOU v3: Distribució empírica de forats del test ───────────────────
-    print("\n── Aprenent distribució de forats del test ──")
-    holed_test_vals = X_holed_test.values.T.astype(np.float32)
-    mask_dist = fit_mask_distribution(holed_test_vals)
+    # ── 5. NOU v3: Distribució empírica de forats — TRAIN + TEST holed_ ──────
+    # Combinem les holed_ del train (1000) i del test (1000) per tenir 2000
+    # mostres en lloc de 1000. Redueix el risc d'overfitting a una distribució
+    # estimada amb poques corbes.
+    print("\n── Aprenent distribució de forats (train + test holed_) ──")
+    holed_train_vals = X_holed_train.values.T.astype(np.float32)
+    holed_test_vals  = X_holed_test.values.T.astype(np.float32)
+    holed_all_vals   = np.concatenate([holed_train_vals, holed_test_vals], axis=0)
+    print(f"  Total holed_ per estimar la distribució: {len(holed_all_vals):,} "
+          f"({len(holed_train_vals)} train + {len(holed_test_vals)} test)")
+    mask_dist = fit_mask_distribution(holed_all_vals)
     print(f"  Ratios per corba: "
           f"min={mask_dist['ratios'].min():.3f} "
           f"med={np.median(mask_dist['ratios']):.3f} "
@@ -147,11 +154,11 @@ def main():
         print(f"[DEBUG] Usant {len(ref_combined)} corbes")
 
     # ── 6. Entrenament ───────────────────────────────────────────────────────
-    print("\n── Entrenament v3 ──")
+    print("\n── Entrenament v3.1 (MAE, model 256/4+4) ──")
     model = train(ref_combined, device,
                   n_epochs_override=DEBUG_N_EPOCHS if DEBUG else None,
                   ckpt_path=COMBINED_CKPT,
-                  use_hybrid_loss=True,
+                  use_hybrid_loss=False,  # mètrica del challenge = MAE
                   curves_raw=ref_combined_raw,
                   global_stats=global_stats,
                   mask_dist=mask_dist)
@@ -192,7 +199,7 @@ def main():
                                columns=X_holed_train.columns,
                                index=X_holed_train.index)
 
-    print_summary(y_train, y_pred, nan_mask_df, model_name="Transformer v3")
+    print_summary(y_train, y_pred, nan_mask_df, model_name="Transformer v3.1")
 
     if not DEBUG:
         OUT_DIR.mkdir(parents=True, exist_ok=True)

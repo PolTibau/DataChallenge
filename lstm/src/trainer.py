@@ -1,13 +1,12 @@
 """
-lstm/src/trainer.py — v3
-------------------------
+lstm/src/trainer.py — v3.1
+--------------------------
 Entrenament i inferència del Transformer.
 
-Canvis v3:
-  - train() accepta mask_dist per màscares realistes
-  - predict_batch_tta(): inferència amb Test-Time Augmentation
-    Múltiples passades amb shifts cíclics per reduir variància
-  - Logging millorat amb percentatge d'avenç
+v3.1:
+  - Pèrdua MAE per defecte (alineada amb la mètrica del challenge)
+  - Màscares de validació congelades (early stopping estable)
+  - TTA per soroll als punts observats (no shifts cíclics)
 """
 
 import time
@@ -20,14 +19,16 @@ from torch.utils.data import DataLoader, random_split
 from lstm.src.config import (
     BATCH_SIZE, N_EPOCHS, LR, LR_WARMUP_STEPS,
     WEIGHT_DECAY, GRAD_CLIP, PATIENCE, VAL_SPLIT,
-    BEST_CKPT, LAST_CKPT, RANDOM_SEED,
-    TTA_N_PASSES, TTA_SHIFTS,
+    BEST_CKPT, RANDOM_SEED,
+    MASK_RATIO, MASK_MIN_LEN, MASK_MAX_LEN, MASK_BLOCK_PROB,
+    EMPIRICAL_MASK_PROB,
+    TTA_N_PASSES, TTA_NOISE_STD,
 )
-from lstm.src.dataset import TimeSeriesDataset
+from lstm.src.dataset import TimeSeriesDataset, generate_mask
 from lstm.src.model   import TemporalMaskedAutoencoder, count_parameters
 
 
-# ── Pèrdua híbrida MAE + MSE ──────────────────────────────────────────────────
+# ── Pèrdues ───────────────────────────────────────────────────────────────────
 
 def masked_mae_loss(pred: torch.Tensor,
                     target: torch.Tensor,
@@ -41,12 +42,7 @@ def masked_hybrid_loss(pred: torch.Tensor,
                        target: torch.Tensor,
                        mask: torch.Tensor,
                        alpha: float = 0.7) -> torch.Tensor:
-    """
-    Pèrdua híbrida: alpha × MAE + (1-alpha) × RMSE
-
-    El MAE és robust a outliers però no penalitza errors grans.
-    El RMSE penalitza errors grans quadràticament → millora corbes difícils.
-    """
+    """Pèrdua híbrida opcional: alpha × MAE + (1-alpha) × RMSE."""
     diff = pred - target
     mae  = (torch.abs(diff) * mask.float()).sum() / mask.float().sum().clamp(min=1)
     mse  = ((diff ** 2)     * mask.float()).sum() / mask.float().sum().clamp(min=1)
@@ -71,11 +67,24 @@ class WarmupCosineScheduler:
         if s <= self.warmup_steps:
             lr = self.lr * s / self.warmup_steps
         else:
-            progress = (s - self.warmup_steps) / (self.total_steps - self.warmup_steps)
+            progress = (s - self.warmup_steps) / max(1, self.total_steps - self.warmup_steps)
             lr = max(self.lr * 0.5 * (1 + np.cos(np.pi * progress)), self.lr / 100)
         for g in self.optimizer.param_groups:
             g["lr"] = lr
         return lr
+
+
+def build_fixed_masks(n: int, t: int, mask_dist: dict | None,
+                      seed: int) -> np.ndarray:
+    """Genera un conjunt fix de màscares (N, T) per a validació estable."""
+    rng = np.random.default_rng(seed)
+    masks = np.zeros((n, t), dtype=bool)
+    for i in range(n):
+        masks[i] = generate_mask(
+            t, MASK_RATIO, MASK_MIN_LEN, MASK_MAX_LEN, MASK_BLOCK_PROB,
+            rng, mask_dist, EMPIRICAL_MASK_PROB,
+        )
+    return masks
 
 
 # ── Entrenament ───────────────────────────────────────────────────────────────
@@ -84,16 +93,14 @@ def train(curves_norm: np.ndarray,
           device: torch.device,
           n_epochs_override: int | None = None,
           ckpt_path: Path | None = None,
-          use_hybrid_loss: bool = True,
+          use_hybrid_loss: bool = False,
           curves_raw: np.ndarray | None = None,
           global_stats: dict | None = None,
           mask_dist: dict | None = None) -> TemporalMaskedAutoencoder:
     """
     Entrena el Transformer.
 
-    Paràmetres v3
-    -------------
-    mask_dist : distribució empírica de forats (per màscares realistes)
+    use_hybrid_loss=False per defecte: la mètrica del challenge és MAE en watts.
     """
     torch.manual_seed(RANDOM_SEED)
     np.random.seed(RANDOM_SEED)
@@ -115,11 +122,14 @@ def train(curves_norm: np.ndarray,
         full_ds, [n_train, n_val],
         generator=torch.Generator().manual_seed(RANDOM_SEED))
 
-    # Val sense augmentation
-    print("  Building validation dataset...")
-    val_full = TimeSeriesDataset(curves_norm, augment=False, seed=RANDOM_SEED + 1,
-                                 curves_raw=curves_raw, global_stats=global_stats,
-                                 mask_dist=mask_dist)
+    # Validació: màscares FIXES (mateixes cada època → early stopping fiable)
+    print("  Building validation dataset with frozen masks...")
+    fixed_val_masks = build_fixed_masks(
+        len(curves_norm), curves_norm.shape[1], mask_dist, seed=RANDOM_SEED + 7)
+    val_full = TimeSeriesDataset(
+        curves_norm, augment=False, seed=RANDOM_SEED + 1,
+        curves_raw=curves_raw, global_stats=global_stats,
+        mask_dist=mask_dist, fixed_masks=fixed_val_masks)
     val_ds.dataset = val_full
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
@@ -131,6 +141,7 @@ def train(curves_norm: np.ndarray,
     print(f"Batches per epoch: {len(train_loader)}")
     print(f"Loss: {loss_name}")
     print(f"Mask distribution: {'empirical (60%) + uniform (40%)' if mask_dist else 'uniform'}")
+    print("Val masks: FROZEN (reproducible early stopping)")
 
     # Model
     model = TemporalMaskedAutoencoder().to(device)
@@ -248,30 +259,21 @@ def predict_batch_tta(model: TemporalMaskedAutoencoder,
                       loader: DataLoader,
                       device: torch.device,
                       n_passes: int = TTA_N_PASSES,
-                      shifts: list = TTA_SHIFTS) -> np.ndarray:
+                      noise_std: float = TTA_NOISE_STD) -> np.ndarray:
     """
-    NOU v3: Inferència amb Test-Time Augmentation.
+    Test-Time Augmentation amb soroll als punts observats.
 
-    Per cada corba, fem n_passes prediccions amb shifts cíclics petits
-    i promitgem el resultat. Això redueix la variància del model perquè
-    cada shift veu els mateixos punts amb diferents posicions temporals.
+    NO usa shifts cíclics: aquests desalinejen el consum amb els embeddings
+    de calendari (hora × tipus_dia), que són fixos per índex de patch.
 
-    El shift cíclic preserva l'estructura de la sèrie però canvia les
-    posicions on les features temporals (hora del dia) s'apliquen.
-    Important: les màscares també es desplacen junt amb les dades.
-
-    Després de cada predicció:
-      pred_shifted ← unshift(pred)
-    Promitgem totes les prediccions desplaçades de tornada a la posició
-    original.
+    Passada 0: predicció neta.
+    Passades 1..n-1: afegeix N(0, noise_std) només on mask=False (observats).
+    Promitja totes les passades.
     """
     model.eval()
     all_preds = []
 
     with torch.no_grad():
-        # Acumular per cada shift
-        shift_preds = {s: [] for s in shifts[:n_passes]}
-
         for batch in loader:
             inp     = batch["input"].to(device)
             mask    = batch["mask"].to(device)
@@ -279,25 +281,16 @@ def predict_batch_tta(model: TemporalMaskedAutoencoder,
             if profile is not None:
                 profile = profile.to(device)
 
-            # Predicció a cada shift
             batch_preds = []
-            for shift in shifts[:n_passes]:
-                if shift == 0:
-                    inp_s, mask_s = inp, mask
+            for p in range(n_passes):
+                if p == 0 or noise_std <= 0:
+                    inp_p = inp
                 else:
-                    inp_s  = torch.roll(inp,  shifts=shift, dims=1)
-                    mask_s = torch.roll(mask, shifts=shift, dims=1)
+                    noise = torch.randn_like(inp) * noise_std
+                    # Només pertorbem punts observats (mask=False)
+                    inp_p = inp + noise * (~mask).float()
+                batch_preds.append(model(inp_p, mask, profile).cpu().numpy())
 
-                pred_s = model(inp_s, mask_s, profile)  # (B, T)
-
-                # Desfer el shift per alinear amb la posició original
-                if shift != 0:
-                    pred_s = torch.roll(pred_s, shifts=-shift, dims=1)
-
-                batch_preds.append(pred_s.cpu().numpy())
-
-            # Promitja sobre passades per aquest batch
-            avg = np.mean(batch_preds, axis=0)
-            all_preds.append(avg)
+            all_preds.append(np.mean(batch_preds, axis=0))
 
     return np.concatenate(all_preds, axis=0)

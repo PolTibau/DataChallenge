@@ -1,15 +1,12 @@
 """
-lstm/src/dataset.py — v3
-------------------------
+lstm/src/dataset.py — v3.1
+--------------------------
 PyTorch Dataset per al Transformer d'imputació.
 
-Canvis v3:
-  - Profile ampliat de 4 a 9 dimensions amb estadístiques de forma:
-      [mu, sigma_robust, cv, weekend_ratio, peak_day_ratio,
-       skewness, autocorr_lag48, p95_norm, iqr_norm]
-  - Normalització robusta amb mediana / MAD en lloc de mean / std
-  - Compute global stats sobre els sigmas (bug fix v2 — abans usava mus)
-  - Màscares realistes: opció d'usar patrons empírics del test
+v3.1:
+  - Profile[3] = weekend_mean / weekday_mean (consum), no fracció de NaN
+  - Mateixa fórmula a entrenament i inferència
+  - Opció de màscares fixes per validació estable
 """
 
 import numpy as np
@@ -59,13 +56,6 @@ def robust_stats(values: np.ndarray) -> tuple[float, float]:
 
 # ─── Càlcul de profile enriquit ───────────────────────────────────────────────
 
-def compute_weekend_ratio(T: int = SEQ_LEN) -> float:
-    """Proporció de timesteps de cap de setmana a la seqüència."""
-    days     = np.arange(T) // STEPS_PER_DAY
-    weekdays = (days + START_WEEKDAY) % 7
-    return float((weekdays >= 5).mean())
-
-
 def is_weekend_flag(T: int = SEQ_LEN) -> np.ndarray:
     """(T,) bool — True si el timestep és cap de setmana."""
     days     = np.arange(T) // STEPS_PER_DAY
@@ -79,37 +69,40 @@ def is_peak_hour_flag(T: int = SEQ_LEN) -> np.ndarray:
     return (hour_idx >= PEAK_HOUR_START) & (hour_idx < PEAK_HOUR_END)
 
 
+def compute_weekend_weekday_ratio(values: np.ndarray) -> float:
+    """
+    Ratio consum_cap_de_setmana / consum_laborable (només punts observats).
+
+    Discriminatiu: industrial ~1 (pla), domèstic sovint ≠1.
+    Mateixa fórmula a train (corbes completes) i infer (punts coneguts).
+    """
+    weekend_mask = is_weekend_flag(len(values))
+    not_nan = ~np.isnan(values)
+    we = weekend_mask & not_nan
+    wd = (~weekend_mask) & not_nan
+    if we.sum() < 5 or wd.sum() < 5:
+        return 1.0
+    we_mean = float(values[we].mean())
+    wd_mean = float(values[wd].mean())
+    if wd_mean < 1e-6:
+        return 1.0
+    return we_mean / wd_mean
+
+
 def compute_profile(values: np.ndarray,
                     global_stats: dict) -> np.ndarray:
     """
     Calcula el vector de perfil enriquit (9 dimensions).
 
-    Cada feature aporta informació discriminativa diferent:
-
-      [0] mu_norm           — nivell de consum (industrial alt vs domèstic baix)
-      [1] sigma_robust_norm — variabilitat robusta (corbes planes vs variables)
-      [2] cv_norm           — coeficient variació (estabilitat relativa)
-      [3] weekend_ratio     — proporció timesteps coneguts en cap de setmana
-      [4] peak_day_ratio    — ratio consum_pic_vespre / consum_dia
-                              ALT → domèstic (pic vespre)
-                              BAIX → industrial (planet o pic diürn)
-      [5] skewness          — asimetria de la distribució de valors
-                              ALT → pics esporàdics
-                              BAIX → consum estable
-      [6] autocorr_lag48    — correlació amb si mateixa amb un dia de lag
-                              ALT → patró diari fort (domèstic)
-                              BAIX → comportament caòtic
-      [7] p95_norm          — percentil 95 normalitzat (pic màxim típic)
-      [8] iqr_norm          — interquartile range normalitzat (spread robust)
-
-    Paràmetres
-    ----------
-    values       : (T,) valors de la corba (pot tenir NaN)
-    global_stats : dict amb estadístiques globals per normalitzar
-
-    Retorna
-    -------
-    profile : (9,) vector float32 normalitzat
+      [0] mu_norm
+      [1] sigma_robust_norm
+      [2] cv_norm
+      [3] weekend_weekday_ratio_norm — consum cap de setmana / laborable
+      [4] peak_day_ratio_norm
+      [5] skewness_norm
+      [6] autocorr_lag48
+      [7] p95_norm
+      [8] iqr_norm
     """
     arr = values[~np.isnan(values)]
     if len(arr) < 10:
@@ -127,7 +120,7 @@ def compute_profile(values: np.ndarray,
 
     # Autocorrelació a lag 48 (un dia)
     if len(values) > STEPS_PER_DAY + 10:
-        v = np.where(np.isnan(values), mu, values)  # imputar amb mu per calcular
+        v = np.where(np.isnan(values), mu, values)
         v_centered = v - mu
         num = (v_centered[:-STEPS_PER_DAY] * v_centered[STEPS_PER_DAY:]).sum()
         den = (v_centered ** 2).sum() + 1e-6
@@ -141,7 +134,6 @@ def compute_profile(values: np.ndarray,
     p75 = float(np.percentile(arr, 75))
     iqr = p75 - p25
 
-    # Peak/day ratio: consum mitjà a hores pic vs fora-pic (durant dies laborables)
     weekend_mask = is_weekend_flag(len(values))
     peak_mask    = is_peak_hour_flag(len(values))
     not_nan      = ~np.isnan(values)
@@ -154,6 +146,8 @@ def compute_profile(values: np.ndarray,
     else:
         peak_ratio = 1.0
 
+    we_wd_ratio = compute_weekend_weekday_ratio(values)
+
     # Normalitzar contra global_stats
     mu_norm      = (mu  - global_stats["mu_mu"])   / (global_stats["mu_sigma"]   + 1e-6)
     sig_norm     = (mad - global_stats["mad_mu"])  / (global_stats["mad_sigma"]  + 1e-6)
@@ -162,9 +156,11 @@ def compute_profile(values: np.ndarray,
     p95_norm     = (p95 - global_stats["p95_mu"])  / (global_stats["p95_sigma"]  + 1e-6)
     iqr_norm     = (iqr - global_stats["iqr_mu"])  / (global_stats["iqr_sigma"]  + 1e-6)
     peak_norm    = (peak_ratio - global_stats["peak_mu"]) / (global_stats["peak_sigma"] + 1e-6)
+    we_wd_norm   = (we_wd_ratio - global_stats["we_wd_mu"]) / (
+        global_stats["we_wd_sigma"] + 1e-6)
 
     return np.array([
-        mu_norm, sig_norm, cv_norm, 0.0,  # weekend_ratio omplert després
+        mu_norm, sig_norm, cv_norm, we_wd_norm,
         peak_norm, skew_norm, autocorr, p95_norm, iqr_norm
     ], dtype=np.float32)
 
@@ -172,12 +168,10 @@ def compute_profile(values: np.ndarray,
 def compute_global_stats(curves: np.ndarray) -> dict:
     """
     Calcula estadístiques globals sobre TOTES les corbes per normalitzar profiles.
-
-    Important v3: ara calculem mu i sigma de cada feature (mu, mad, cv, ...)
-    sobre la població de corbes, no només de la mu (bug fix).
     """
-    print("  Calculant estadístiques globals per profiles (v3)...")
-    mus, mads, cvs, skews, p95s, iqrs, peaks = [], [], [], [], [], [], []
+    print("  Calculant estadístiques globals per profiles (v3.1)...")
+    mus, mads, cvs, skews, p95s, iqrs, peaks, we_wds = (
+        [], [], [], [], [], [], [], [])
 
     weekend_mask = is_weekend_flag(curves.shape[1])
     peak_mask    = is_peak_hour_flag(curves.shape[1])
@@ -209,9 +203,11 @@ def compute_global_stats(curves: np.ndarray) -> dict:
         else:
             peak_ratio = 1.0
 
+        we_wd = compute_weekend_weekday_ratio(c)
+
         mus.append(mu);     mads.append(mad);  cvs.append(cv)
         skews.append(skew); p95s.append(p95);  iqrs.append(iqr)
-        peaks.append(peak_ratio)
+        peaks.append(peak_ratio); we_wds.append(we_wd)
 
     def _stats(lst):
         a = np.array(lst)
@@ -224,6 +220,7 @@ def compute_global_stats(curves: np.ndarray) -> dict:
     p95_mu,  p95_sigma  = _stats(p95s)
     iqr_mu,  iqr_sigma  = _stats(iqrs)
     peak_mu, peak_sigma = _stats(peaks)
+    we_wd_mu, we_wd_sigma = _stats(we_wds)
 
     stats = {
         "mu_mu": mu_mu,     "mu_sigma": mu_sigma,
@@ -233,9 +230,11 @@ def compute_global_stats(curves: np.ndarray) -> dict:
         "p95_mu": p95_mu,   "p95_sigma": p95_sigma,
         "iqr_mu": iqr_mu,   "iqr_sigma": iqr_sigma,
         "peak_mu": peak_mu, "peak_sigma": peak_sigma,
+        "we_wd_mu": we_wd_mu, "we_wd_sigma": we_wd_sigma,
     }
     print(f"    mu={mu_mu:.1f}±{mu_sigma:.1f}W  "
           f"peak_ratio={peak_mu:.2f}±{peak_sigma:.2f}  "
+          f"we/wd={we_wd_mu:.2f}±{we_wd_sigma:.2f}  "
           f"skew={skew_mu:.2f}±{skew_sigma:.2f}")
     return stats
 
@@ -342,23 +341,25 @@ class TimeSeriesDataset(Dataset):
     """
     Dataset d'entrenament: corbes senceres amb forats simulats.
 
-    v3:
-      - Profiles enriquits (9 dims)
-      - Suport per màscares empíriques (basades en distribució real del test)
+    v3.1:
+      - Profiles amb weekend/weekday load ratio coherent
+      - fixed_masks: si es passa, cada índex usa sempre la mateixa màscara
+        (validació estable per early stopping)
     """
 
     def __init__(self, curves_norm: np.ndarray,
                  curves_raw: np.ndarray | None = None,
                  global_stats: dict | None = None,
                  mask_dist: dict | None = None,
-                 augment: bool = True, seed: int = 42):
+                 augment: bool = True, seed: int = 42,
+                 fixed_masks: np.ndarray | None = None):
         self.curves    = curves_norm.astype(np.float32)
         self.N, self.T = self.curves.shape
         self.augment   = augment
         self.rng       = np.random.default_rng(seed)
         self.mask_dist = mask_dist
+        self.fixed_masks = fixed_masks  # (N, T) bool o None
 
-        # Calcular profiles si tenim les dades originals
         if curves_raw is not None and global_stats is not None:
             print(f"  Computing {self.N:,} profiles...")
             self.profiles = np.stack([
@@ -376,10 +377,13 @@ class TimeSeriesDataset(Dataset):
         if self.augment:
             original += self.rng.normal(0, 0.01, self.T).astype(np.float32)
 
-        mask = generate_mask(
-            self.T, MASK_RATIO, MASK_MIN_LEN, MASK_MAX_LEN, MASK_BLOCK_PROB,
-            self.rng, self.mask_dist, EMPIRICAL_MASK_PROB,
-        )
+        if self.fixed_masks is not None:
+            mask = self.fixed_masks[idx].copy()
+        else:
+            mask = generate_mask(
+                self.T, MASK_RATIO, MASK_MIN_LEN, MASK_MAX_LEN, MASK_BLOCK_PROB,
+                self.rng, self.mask_dist, EMPIRICAL_MASK_PROB,
+            )
         masked_input = original.copy()
         masked_input[mask] = 0.0
 
@@ -395,7 +399,8 @@ class InferenceDataset(Dataset):
     """
     Dataset d'inferència: corbes holed_ amb les màscares reals.
 
-    v3: profiles enriquits + weekend_ratio calculat sobre punts coneguts.
+    v3.1: profiles amb la mateixa fórmula que l'entrenament
+    (weekend/weekday load sobre punts observats).
     """
 
     def __init__(self, curves_norm: np.ndarray,
@@ -407,15 +412,10 @@ class InferenceDataset(Dataset):
         self.N, self.T = self.curves.shape
 
         if curves_raw is not None and global_stats is not None:
-            weekend_mask = is_weekend_flag(self.T)
-            profiles = []
-            for i in range(self.N):
-                p = compute_profile(curves_raw[i], global_stats)
-                known = ~nan_masks[i]
-                if known.sum() > 0:
-                    p[3] = float(weekend_mask[known].mean())
-                profiles.append(p)
-            self.profiles = np.stack(profiles).astype(np.float32)
+            self.profiles = np.stack([
+                compute_profile(curves_raw[i], global_stats)
+                for i in range(self.N)
+            ]).astype(np.float32)
         else:
             self.profiles = np.zeros((self.N, PROFILE_DIM), dtype=np.float32)
 

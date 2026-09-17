@@ -4,3 +4,13 @@ outputs/
 *.parquet
 *.pkl
 *.png
+
+# Python bytecode / cache — no s'ha de versionar
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+.env

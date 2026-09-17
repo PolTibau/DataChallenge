@@ -1,22 +1,18 @@
 """
-lstm/main_finetune.py
----------------------
-Fine-tuning del model entrenat sobre les corbes de referència del TEST.
+lstm/main_finetune.py — v3.1
+----------------------------
+Fine-tuning del model v3 (best_model_v3.pt) sobre corbes de referència
+del TEST, amb la mateixa pipeline que l'entrenament combinat:
 
-Per què?
---------
-El model s'ha entrenat sobre X_train (20.000 corbes).
-Però X_test té 37.140 corbes de referència pròpies que el model
-no ha vist mai. Fer fine-tuning sobre aquestes corbes permet que
-el model s'adapti al context específic del test abans d'imputar.
+  - Normalització robusta (mediana / MAD)
+  - Profiles enriquits (9 dims) + global_stats
+  - Màscares empíriques (si es pot estimar de holed_)
+  - Pèrdua MAE + profiles al forward
 
 Flux:
-  1. Carregar best_model.pt (entrenat sobre X_train)
-  2. Carregar les 37.140 corbes de referència de X_test
-  3. Fine-tuning breu (N_FINETUNE_EPOCHS èpoques, LR baix)
-  4. Guardar el model fine-tuned
-  5. Imputar les 1000 corbes holed_ del test
-  6. Guardar y_pred_test.csv
+  1. Carregar best_model_v3.pt (entrenat amb main_train_combined)
+  2. Fine-tuning breu sobre refs de X_test
+  3. Guardar finetuned_model_v3.pt
 
 Execució:
     cd data_challenge
@@ -27,7 +23,6 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-# Evitar repòs a Windows
 try:
     import ctypes
     ES_CONTINUOUS       = 0x80000000
@@ -37,96 +32,79 @@ try:
         ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED)
     _windows = True
 except AttributeError:
-    _windows = False   # Linux/Mac (Colab) — no cal fer res
+    _windows = False
 
 import time
 import numpy as np
-import pandas as pd
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, random_split
 
 from lstm.src.config  import (
-    X_TEST_PATH, OUT_DIR,
-    BEST_CKPT, CKPT_DIR, BATCH_SIZE,
+    X_TEST_PATH, X_TRAIN_PATH, Y_TRAIN_PATH,
+    CKPT_DIR, BATCH_SIZE,
     RANDOM_SEED, GRAD_CLIP, VAL_SPLIT,
 )
 from lstm.src.model   import TemporalMaskedAutoencoder
-from lstm.src.trainer import masked_mae_loss, WarmupCosineScheduler
-from lstm.src.dataset import TimeSeriesDataset
-from src.data_loader  import load_test
+from lstm.src.trainer import masked_mae_loss, WarmupCosineScheduler, build_fixed_masks
+from lstm.src.dataset import (
+    TimeSeriesDataset, compute_global_stats, fit_mask_distribution, robust_stats,
+)
+from src.data_loader  import load_test, load_train
 
 
+N_FINETUNE_EPOCHS = 15
+LR_FINETUNE       = 3e-5
+PATIENCE_FT       = 5
+PRETRAIN_CKPT     = CKPT_DIR / "best_model_v3.pt"
+FINETUNE_CKPT     = CKPT_DIR / "finetuned_model_v3.pt"
 
-# ── Configuració del fine-tuning ──────────────────────────────────────────────
-N_FINETUNE_EPOCHS = 25     # èpoques de fine-tuning (menys que l'entrenament original)
-LR_FINETUNE       = 3e-5   # LR molt baix per no destruir el que ha après
-PATIENCE_FT       = 6      # early stopping del fine-tuning
-FINETUNE_CKPT     = CKPT_DIR / "finetuned_model.pt"
 
-
-def normalize_matrix(values: np.ndarray) -> np.ndarray:
-    """
-    Normalitza cada fila (corba) per zscore.
-    Elimina corbes amb NaN o std=0 (planes).
-    """
+def normalize_robust(values: np.ndarray, label: str) -> tuple:
+    """Normalització mediana/MAD; elimina NaN i planes."""
     has_nan = np.isnan(values).any(axis=1)
     is_flat = values.std(axis=1) < 1e-6
     bad     = has_nan | is_flat
-
     if bad.sum() > 0:
-        print(f"[finetune] Eliminant {bad.sum()} corbes problemàtiques "
+        print(f"[{label}] Eliminant {bad.sum()} corbes problemàtiques "
               f"({has_nan.sum()} amb NaN, {is_flat.sum()} planes)")
     values = values[~bad]
 
-    N, T = values.shape
     norm = np.zeros_like(values)
-    for i in range(N):
-        mu, sig  = values[i].mean(), values[i].std()
-        norm[i]  = (values[i] - mu) / (sig if sig > 1e-6 else 1.0)
+    for i in range(len(values)):
+        med, mad = robust_stats(values[i])
+        norm[i]  = (values[i] - med) / mad
 
-    print(f"[finetune] Corbes vàlides: {N} | NaN restants: {np.isnan(norm).sum()}")
-    return norm
-
-
-def normalize_holed(X_holed: pd.DataFrame) -> tuple:
-    """Normalitza les corbes holed_ i guarda stats per desnormalitzar."""
-    values    = X_holed.values.T.astype(np.float32)
-    N, T      = values.shape
-    nan_masks = np.isnan(values)
-    norm      = np.zeros_like(values)
-    mus       = np.zeros(N, dtype=np.float32)
-    sigmas    = np.ones(N,  dtype=np.float32)
-
-    for i in range(N):
-        mu, sig   = np.nanmean(values[i]), np.nanstd(values[i])
-        sig       = sig if sig > 1e-6 else 1.0
-        mus[i]    = mu
-        sigmas[i] = sig
-        norm[i]   = np.nan_to_num((values[i] - mu) / sig, nan=0.0)
-
-    return norm, nan_masks, mus, sigmas
+    print(f"[{label}] Corbes vàlides: {len(values):,} | "
+          f"NaN restants: {np.isnan(norm).sum()}")
+    return norm, values
 
 
 def finetune(model: TemporalMaskedAutoencoder,
              ref_norm: np.ndarray,
-             device: torch.device) -> TemporalMaskedAutoencoder:
-    """
-    Fine-tunes el model sobre les corbes de referència del test.
-
-    Usa un LR molt baix per preservar el que el model ha après
-    i adaptar-lo subtilment al context del test.
-    """
+             device: torch.device,
+             curves_raw: np.ndarray | None = None,
+             global_stats: dict | None = None,
+             mask_dist: dict | None = None) -> TemporalMaskedAutoencoder:
+    """Fine-tuning amb profiles, màscares empíriques i val masks congelades."""
     torch.manual_seed(RANDOM_SEED)
 
-    # Dataset
-    full_ds = TimeSeriesDataset(ref_norm, augment=True, seed=RANDOM_SEED + 99)
+    full_ds = TimeSeriesDataset(
+        ref_norm, augment=True, seed=RANDOM_SEED + 99,
+        curves_raw=curves_raw, global_stats=global_stats, mask_dist=mask_dist)
     n_val   = max(1, int(len(full_ds) * VAL_SPLIT))
     n_train = len(full_ds) - n_val
     train_ds, val_ds = random_split(
         full_ds, [n_train, n_val],
         generator=torch.Generator().manual_seed(RANDOM_SEED))
-    val_ds.dataset = TimeSeriesDataset(ref_norm, augment=False, seed=RANDOM_SEED + 100)
+
+    fixed_val_masks = build_fixed_masks(
+        len(ref_norm), ref_norm.shape[1], mask_dist, seed=RANDOM_SEED + 101)
+    val_full = TimeSeriesDataset(
+        ref_norm, augment=False, seed=RANDOM_SEED + 100,
+        curves_raw=curves_raw, global_stats=global_stats,
+        mask_dist=mask_dist, fixed_masks=fixed_val_masks)
+    val_ds.dataset = val_full
 
     train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE,
                               shuffle=True,  num_workers=0, pin_memory=True)
@@ -137,11 +115,9 @@ def finetune(model: TemporalMaskedAutoencoder,
     print(f"LR: {LR_FINETUNE:.1e}  |  Èpoques màx: {N_FINETUNE_EPOCHS}  |  "
           f"Patience: {PATIENCE_FT}")
 
-    # Optimizer amb LR molt baix
     optimizer   = torch.optim.AdamW(model.parameters(), lr=LR_FINETUNE,
                                     weight_decay=1e-5)
     total_steps = N_FINETUNE_EPOCHS * len(train_loader)
-    # Warmup molt curt — el model ja està pre-entrenat
     scheduler   = WarmupCosineScheduler(optimizer, warmup_steps=50,
                                         total_steps=total_steps, lr=LR_FINETUNE)
 
@@ -156,15 +132,17 @@ def finetune(model: TemporalMaskedAutoencoder,
     for epoch in range(1, N_FINETUNE_EPOCHS + 1):
         t0 = time.time()
 
-        # Train
         model.train()
         train_losses = []
         for batch in train_loader:
             inp, tgt, mask = (batch["input"].to(device),
                               batch["target"].to(device),
                               batch["mask"].to(device))
+            profile = batch.get("profile")
+            if profile is not None:
+                profile = profile.to(device)
             optimizer.zero_grad()
-            loss = masked_mae_loss(model(inp, mask), tgt, mask)
+            loss = masked_mae_loss(model(inp, mask, profile), tgt, mask)
             loss.backward()
             if GRAD_CLIP > 0:
                 nn.utils.clip_grad_norm_(model.parameters(), GRAD_CLIP)
@@ -172,7 +150,6 @@ def finetune(model: TemporalMaskedAutoencoder,
             scheduler.step()
             train_losses.append(loss.item())
 
-        # Validació
         model.eval()
         val_losses = []
         with torch.no_grad():
@@ -180,8 +157,11 @@ def finetune(model: TemporalMaskedAutoencoder,
                 inp, tgt, mask = (batch["input"].to(device),
                                   batch["target"].to(device),
                                   batch["mask"].to(device))
+                profile = batch.get("profile")
+                if profile is not None:
+                    profile = profile.to(device)
                 val_losses.append(
-                    masked_mae_loss(model(inp, mask), tgt, mask).item())
+                    masked_mae_loss(model(inp, mask, profile), tgt, mask).item())
 
         train_mae = np.mean(train_losses)
         val_mae   = np.mean(val_losses)
@@ -205,8 +185,6 @@ def finetune(model: TemporalMaskedAutoencoder,
             break
 
     print(f"\nMillor Val MAE fine-tuning (normalitzat): {best_val_mae:.4f}")
-
-    # Carregar el millor model fine-tuned
     model.load_state_dict(
         torch.load(FINETUNE_CKPT, map_location=device, weights_only=True))
     return model
@@ -218,38 +196,50 @@ def main():
     if device.type == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
 
-    # ── Carregar model pre-entrenat ───────────────────────────────────────────
-    print(f"\nCarregant model pre-entrenat: {BEST_CKPT}")
-    if not BEST_CKPT.exists():
+    print(f"\nCarregant model pre-entrenat: {PRETRAIN_CKPT}")
+    if not PRETRAIN_CKPT.exists():
         raise FileNotFoundError(
-            f"No s'ha trobat '{BEST_CKPT}'.\n"
-            f"Executa primer: python -m lstm.main_train")
+            f"No s'ha trobat '{PRETRAIN_CKPT}'.\n"
+            f"Executa primer: python -m lstm.main_train_combined")
 
     model = TemporalMaskedAutoencoder().to(device)
     model.load_state_dict(
-        torch.load(BEST_CKPT, map_location=device, weights_only=True))
+        torch.load(PRETRAIN_CKPT, map_location=device, weights_only=True))
     print("Model carregat correctament.")
 
-    # ── Carregar dades del test ───────────────────────────────────────────────
-    print("\n── Carregant dades de test ──")
-    X_ref, X_holed = load_test(X_TEST_PATH)
+    print("\n── Carregant dades ──")
+    # global_stats sobre la mateixa base que l'entrenament combinat
+    X_ref_train, _, _ = load_train(X_TRAIN_PATH, Y_TRAIN_PATH)
+    X_ref_test, X_holed = load_test(X_TEST_PATH)
 
-    # Normalitzar corbes de referència del TEST
-    ref_values = X_ref.values.T.astype(np.float32)   # (37140, T)
-    ref_norm   = normalize_matrix(ref_values)
+    ref_train_vals = X_ref_train.select_dtypes("number").to_numpy(dtype=np.float32).T
+    ref_test_vals  = X_ref_test.select_dtypes("number").to_numpy(dtype=np.float32).T
 
-    # Normalitzar corbes holed_
-    holed_norm, nan_masks, mus, sigmas = normalize_holed(X_holed)
+    def clean_raw(vals):
+        bad = np.isnan(vals).any(axis=1) | (vals.std(axis=1) < 1e-6)
+        return vals[~bad]
 
-    # ── Fine-tuning sobre X_test ref ─────────────────────────────────────────
+    ref_all_raw  = np.concatenate([clean_raw(ref_train_vals),
+                                   clean_raw(ref_test_vals)], axis=0)
+    global_stats = compute_global_stats(ref_all_raw)
+
+    # Fine-tune només sobre refs del test (adaptació al context)
+    ref_norm, ref_raw = normalize_robust(ref_test_vals, "X_test ref")
+
+    print("\n── Aprenent distribució de forats (test holed_) ──")
+    mask_dist = fit_mask_distribution(X_holed.values.T.astype(np.float32))
+
     print("\n── Fine-tuning sobre corbes de referència del test ──")
-    model = finetune(model, ref_norm, device)
+    model = finetune(model, ref_norm, device,
+                     curves_raw=ref_raw,
+                     global_stats=global_stats,
+                     mask_dist=mask_dist)
 
     print(f"\nFine-tuning completat.")
     print(f"Model guardat a: {FINETUNE_CKPT}")
-    print(f"\nAra executa: python -m lstm.main_predict")
+    print(f"\nPer inferir amb aquest checkpoint, actualitza "
+          f"main_predict_combined.py o carrega '{FINETUNE_CKPT.name}'.")
 
-    # Restaurar repòs Windows
     if _windows:
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
 

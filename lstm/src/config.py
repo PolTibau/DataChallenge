@@ -1,21 +1,14 @@
 """
-lstm/src/config.py — v3
------------------------
+lstm/src/config.py — v3.1
+-------------------------
 Paràmetres del Transformer. Modifica aquí per experimentar.
 
-Canvis v3 respecte la versió anterior:
-  - PATCH_SIZE=2 (1h per token) — màxima resolució temporal
-    Cada token representa 1 hora, granularitat natural del comportament humà
-  - PROFILE_DIM ampliat de 4 a 9 — més estadístiques discriminatives
-    [mu, sigma_robust, cv, weekend_ratio, peak_day_ratio, skewness,
-     autocorr_lag48, p95, q3_q1_iqr]
-  - Hora × tipus_dia com a embedding conjunt (96 entrades) en lloc de
-    sumar hour + weekday + workday per separat
-  - Normalització robusta (mediana / MAD) en lloc de mean / std
-  - Màscares realistes durant l'entrenament basades en patrons reals del test
-  - Bigger model: D_MODEL=384, més capacitat per aprofitar GPU
-
-Configuració actual: model gran per GPU.
+v3.1 (correccions + velocitat):
+  - Model més petit (256 / 4+4) — 8+8 @ 384 costava >12h amb millora marginal
+  - Batch 64, warmup 1000, patience 8 — menys steps i parada més aviat
+  - TTA per soroll (no shifts cíclics) — no desalineja embeddings de calendari
+  - DEBUG=False per defecte
+  - Profile [3] = weekend/weekday load ratio (coherent train/infer)
 """
 
 from pathlib import Path
@@ -51,13 +44,13 @@ MASK_BLOCK_PROB = 0.7
 EMPIRICAL_MASK_PROB = 0.6   # 60% màscares realistes, 40% aleatòries
 
 # ── Arquitectura ──────────────────────────────────────────────────────────────
-# NOU v3: model més gran per aprofitar GPU. Amb PATCH_SIZE=2 tenim ~530 tokens,
-# així que cal capacitat suficient per processar aquesta seqüència.
-D_MODEL      = 384
-N_HEADS      = 8         # 384/8 = 48 dims per head — múltiple net
-N_ENC_LAYERS = 8
-N_DEC_LAYERS = 8
-D_FF         = 1536      # 4 × D_MODEL com és habitual
+# v3.1: 4+4 capes i D=256. Amb ~530 tokens l'atenció ja és cara; doblar
+# capes (8+8 @ 384) allargava l'entrenament >12h amb retorn petit.
+D_MODEL      = 256
+N_HEADS      = 8         # 256/8 = 32 dims per head
+N_ENC_LAYERS = 4
+N_DEC_LAYERS = 4
+D_FF         = 1024      # 4 × D_MODEL
 DROPOUT      = 0.1
 MAX_SEQ_LEN  = 2048
 
@@ -65,20 +58,20 @@ MAX_SEQ_LEN  = 2048
 PROFILE_DIM  = 9
 
 # ── Entrenament ───────────────────────────────────────────────────────────────
-BATCH_SIZE      = 48     # reduït lleugerament pel model més gran (cabrà a GPU típica)
-N_EPOCHS        = 100    # més èpoques, el model és més gran
+BATCH_SIZE      = 64     # el model més petit cap amb batch més gran → menys steps
+N_EPOCHS        = 80
 LR              = 1e-4
-LR_WARMUP_STEPS = 2000   # warmup més llarg per al model gran
+LR_WARMUP_STEPS = 1000
 WEIGHT_DECAY    = 1e-5
 GRAD_CLIP       = 1.0
-PATIENCE        = 12     # més paciència, el model gran convergeix més lent
+PATIENCE        = 8
 VAL_SPLIT       = 0.1
 
 # ── Test-time augmentation ───────────────────────────────────────────────────
-# NOU v3: nombre de passades per corba a l'inferència (1 = sense TTA)
-# El TTA promedia múltiples prediccions amb shifts cíclics petits
-TTA_N_PASSES = 4
-TTA_SHIFTS   = [0, 12, 24, 36]   # shifts en timesteps (0h, 6h, 12h, 18h)
+# Passades a inferència (1 = sense TTA). Soroll gaussità als punts observats;
+# NO shifts cíclics: desalinearien hora-del-dia vs. embeddings de calendari.
+TTA_N_PASSES  = 3
+TTA_NOISE_STD = 0.02     # en espai normalitzat (mediana/MAD)
 
 # ── Mode de prova ─────────────────────────────────────────────────────────────
 DEBUG          = False
