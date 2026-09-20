@@ -44,13 +44,11 @@ MASK_BLOCK_PROB = 0.7
 EMPIRICAL_MASK_PROB = 0.6   # 60% màscares realistes, 40% aleatòries
 
 # ── Arquitectura ──────────────────────────────────────────────────────────────
-# v3.1: 4+4 capes i D=256. Amb ~530 tokens l'atenció ja és cara; doblar
-# capes (8+8 @ 384) allargava l'entrenament >12h amb retorn petit.
-D_MODEL      = 256
+D_MODEL      = 192
 N_HEADS      = 8         # 256/8 = 32 dims per head
 N_ENC_LAYERS = 4
 N_DEC_LAYERS = 4
-D_FF         = 1024      # 4 × D_MODEL
+D_FF         = 768      # 4 × D_MODEL
 DROPOUT      = 0.1
 MAX_SEQ_LEN  = 2048
 
