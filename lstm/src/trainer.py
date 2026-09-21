@@ -374,7 +374,7 @@ def train(curves_norm: np.ndarray,
         lr_now     = optimizer.param_groups[0]["lr"]
         elapsed    = time.time() - t0
 
-        improved = val_loss < best_val_mae
+        improved = bool(val_loss < best_val_mae)
         if improved:
             best_val_mae  = val_loss
             patience_left = PATIENCE
