@@ -6,7 +6,7 @@ Entrena el Transformer v3.1 sobre X_train ref + X_test ref junts.
 v3.1:
   - Profile weekend/weekday load coherent
   - Pèrdua MAE (mètrica del challenge)
-  - Model més petit (256 / 4+4) per reduir temps d'entrenament
+  - Model 192 / 4+4 / D_FF=768 per reduir temps d'entrenament
   - Val masks congelades + TTA per soroll
 
 Execució:
@@ -176,7 +176,7 @@ def main():
         resume_from = Path(RESUME_FROM) if RESUME_FROM else (ckpt_save_dir / "latest.pt")
         print(f"\nRESUME=True → {resume_from}")
 
-    print("\n── Entrenament v3.1 (MAE, model 256/4+4) ──")
+    print("\n── Entrenament v3.1 (MAE, D_MODEL=192, 4+4, D_FF=768) ──")
     model = train(ref_combined, device,
                   n_epochs_override=DEBUG_N_EPOCHS if DEBUG else None,
                   ckpt_path=COMBINED_CKPT,

@@ -3,10 +3,11 @@ lstm/main_predict_combined.py — v3
 ----------------------------------
 Inferència del model v3 sobre X_test holed_.
 
-Novetats v3:
-  - Test-Time Augmentation (4 passades amb shifts cíclics)
+Novetats v3.1:
+  - Test-Time Augmentation (soroll als punts observats, no shifts cíclics)
   - Normalització robusta (mediana / MAD)
   - Profiles enriquits (9 dims)
+  - Checkpoints: predicció usa best_model_v3.pt (només pesos)
 
 Prerequisit:
     python -m lstm.main_train_combined

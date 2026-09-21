@@ -9,17 +9,17 @@ Canvis v3 respecte v2:
     sumar hour + weekday + workday per separat.
     Captura interaccions: "8h dilluns laborable" ≠ "8h diumenge"
   - ProfileEmbedding ampliat a 9 dimensions amb estadístiques de forma
-  - Suport per shift cíclic per Test-Time Augmentation
+  - TTA a inferència: soroll als punts observats (no shifts cíclics)
 
-Arquitectura
+Arquitectura (mides a lstm/src/config.py; actualment D=192, 4+4 capes)
 ------------
   Input (B, T) + Profile (B, 9)
     → Patch Embedding (patch_size=2)        → (B, P, D)
     + Joint Time Embedding (hora × diatipus) → (1, P, D)
     + Profile Embedding (9 features)         → (B, 1, D)
     → Positional Encoding sinusoidal
-    → Encoder Transformer (8 capes, 8 caps, D=384)
-    → Decoder Transformer (8 capes, 8 caps, D=384)
+    → Encoder Transformer (N_ENC_LAYERS, N_HEADS, D_MODEL)
+    → Decoder Transformer (N_DEC_LAYERS, N_HEADS, D_MODEL)
     → Projecció de sortida → (B, T)
 """
 

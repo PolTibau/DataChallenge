@@ -4,11 +4,12 @@ lstm/src/config.py — v3.1
 Paràmetres del Transformer. Modifica aquí per experimentar.
 
 v3.1 (correccions + velocitat):
-  - Model més petit (256 / 4+4) — 8+8 @ 384 costava >12h amb millora marginal
+  - Model 192 / 4+4 / D_FF=768 (abans 8+8 @ 384; una iteració intermèdia va ser 256)
   - Batch 64, warmup 1000, patience 8 — menys steps i parada més aviat
   - TTA per soroll (no shifts cíclics) — no desalineja embeddings de calendari
   - DEBUG=False per defecte
   - Profile [3] = weekend/weekday load ratio (coherent train/infer)
+  - Checkpoints complets (latest.pt) per reanudar a Kaggle
 """
 
 from pathlib import Path
@@ -45,7 +46,7 @@ EMPIRICAL_MASK_PROB = 0.6   # 60% màscares realistes, 40% aleatòries
 
 # ── Arquitectura ──────────────────────────────────────────────────────────────
 D_MODEL      = 192
-N_HEADS      = 8         # 256/8 = 32 dims per head
+N_HEADS      = 8         # 192/8 = 24 dims per head
 N_ENC_LAYERS = 4
 N_DEC_LAYERS = 4
 D_FF         = 768      # 4 × D_MODEL
