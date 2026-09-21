@@ -201,7 +201,10 @@ def _restore_rng_state(state: dict | None) -> None:
 
 def _write_status(ckpt_dir: Path, payload: dict) -> None:
     path = ckpt_dir / "training_status.json"
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    try:
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except Exception as exc:
+        print(f"  Warning: could not write training_status.json: {exc}")
 
 
 # ── Entrenament ───────────────────────────────────────────────────────────────
@@ -413,14 +416,14 @@ def train(curves_norm: np.ndarray,
             _atomic_torch_save(full_ckpt, ckpt_dir_path / f"epoch_{epoch:03d}.pt")
 
         _write_status(ckpt_dir_path, {
-            "last_completed_epoch": epoch,
-            "n_epochs": n_epochs,
-            "best_val_loss": best_val_mae,
-            "patience_left": patience_left,
+            "last_completed_epoch": int(epoch),
+            "n_epochs": int(n_epochs),
+            "best_val_loss": float(best_val_mae),
+            "patience_left": int(patience_left),
             "latest": str(latest_path),
             "best_full": str(best_full_path),
             "best_weights": str(best_weights_path),
-            "improved_this_epoch": improved,
+            "improved_this_epoch": bool(improved),
         })
 
         print(f"{epoch:>6} {train_loss:>11.4f} {val_loss:>10.4f} "
