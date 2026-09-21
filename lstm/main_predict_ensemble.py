@@ -83,8 +83,8 @@ def load_model(ckpt_path: Path, d_model: int, n_heads: int,
         dropout   = DROPOUT,
     ).to(device)
 
-    model.load_state_dict(
-        torch.load(ckpt_path, map_location=device, weights_only=True))
+    from lstm.src.trainer import load_model_weights
+    load_model_weights(ckpt_path, model, device)
 
     n_params = sum(p.numel() for p in model.parameters())
     print(f"  Paràmetres: {n_params:,}")

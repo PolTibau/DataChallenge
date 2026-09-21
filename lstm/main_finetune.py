@@ -46,7 +46,9 @@ from lstm.src.config  import (
     RANDOM_SEED, GRAD_CLIP, VAL_SPLIT,
 )
 from lstm.src.model   import TemporalMaskedAutoencoder
-from lstm.src.trainer import masked_mae_loss, WarmupCosineScheduler, build_fixed_masks
+from lstm.src.trainer import (
+    masked_mae_loss, WarmupCosineScheduler, build_fixed_masks, load_model_weights,
+)
 from lstm.src.dataset import (
     TimeSeriesDataset, compute_global_stats, fit_mask_distribution, robust_stats,
 )
@@ -185,8 +187,7 @@ def finetune(model: TemporalMaskedAutoencoder,
             break
 
     print(f"\nMillor Val MAE fine-tuning (normalitzat): {best_val_mae:.4f}")
-    model.load_state_dict(
-        torch.load(FINETUNE_CKPT, map_location=device, weights_only=True))
+    load_model_weights(FINETUNE_CKPT, model, device)
     return model
 
 
@@ -203,8 +204,7 @@ def main():
             f"Executa primer: python -m lstm.main_train_combined")
 
     model = TemporalMaskedAutoencoder().to(device)
-    model.load_state_dict(
-        torch.load(PRETRAIN_CKPT, map_location=device, weights_only=True))
+    load_model_weights(PRETRAIN_CKPT, model, device)
     print("Model carregat correctament.")
 
     print("\n── Carregant dades ──")

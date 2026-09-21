@@ -28,7 +28,7 @@ from lstm.src.config  import (
     PRED_TEST_PATH, OUT_DIR, CKPT_DIR, BATCH_SIZE,
 )
 from lstm.src.model   import TemporalMaskedAutoencoder
-from lstm.src.trainer import predict_batch_tta
+from lstm.src.trainer import predict_batch_tta, load_model_weights
 from lstm.src.dataset import (
     InferenceDataset, compute_global_stats, robust_stats,
 )
@@ -66,8 +66,7 @@ def main():
 
     print(f"\nCarregant model fine-tunat: {FINETUNED_CKPT}")
     model = TemporalMaskedAutoencoder().to(device)
-    model.load_state_dict(
-        torch.load(FINETUNED_CKPT, map_location=device, weights_only=True))
+    load_model_weights(FINETUNED_CKPT, model, device)
     print("Model carregat.")
 
     print("\n── Carregant dades per global_stats ──")

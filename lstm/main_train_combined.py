@@ -50,6 +50,22 @@ from src.evaluator    import print_summary
 
 COMBINED_CKPT = CKPT_DIR / "best_model_v3.pt"
 
+# ── Resume (Kaggle / local) ───────────────────────────────────────────────────
+# False = entrenament des de zero. True = continua des de RESUME_FROM.
+RESUME = False
+RESUME_FROM = None  # p.ex. "/kaggle/working/DataChallenge_checkpoints/latest.pt"
+
+
+def resolve_ckpt_dir() -> Path:
+    """Kaggle → /kaggle/working/DataChallenge_checkpoints ; si no, lstm/checkpoints."""
+    kaggle_working = Path("/kaggle/working")
+    if kaggle_working.exists():
+        d = kaggle_working / "DataChallenge_checkpoints"
+    else:
+        d = CKPT_DIR
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 
 def normalize_robust(values: np.ndarray, label: str) -> tuple:
     """
@@ -154,6 +170,12 @@ def main():
         print(f"[DEBUG] Usant {len(ref_combined)} corbes")
 
     # ── 6. Entrenament ───────────────────────────────────────────────────────
+    ckpt_save_dir = resolve_ckpt_dir()
+    resume_from = None
+    if RESUME:
+        resume_from = Path(RESUME_FROM) if RESUME_FROM else (ckpt_save_dir / "latest.pt")
+        print(f"\nRESUME=True → {resume_from}")
+
     print("\n── Entrenament v3.1 (MAE, model 256/4+4) ──")
     model = train(ref_combined, device,
                   n_epochs_override=DEBUG_N_EPOCHS if DEBUG else None,
@@ -161,9 +183,12 @@ def main():
                   use_hybrid_loss=False,  # mètrica del challenge = MAE
                   curves_raw=ref_combined_raw,
                   global_stats=global_stats,
-                  mask_dist=mask_dist)
+                  mask_dist=mask_dist,
+                  resume_from=resume_from,
+                  ckpt_dir=ckpt_save_dir)
 
-    print(f"\nModel v3 guardat a: {COMBINED_CKPT}")
+    print(f"\nPesos millor model (predicció): {COMBINED_CKPT}")
+    print(f"Checkpoints complets:           {ckpt_save_dir}")
 
     # ── 7. Avaluació sobre X_train holed_ ────────────────────────────────────
     print("\n── Avaluació sobre X_train holed_ ──")
