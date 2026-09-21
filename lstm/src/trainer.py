@@ -200,11 +200,28 @@ def _restore_rng_state(state: dict | None) -> None:
 
 
 def _write_status(ckpt_dir: Path, payload: dict) -> None:
+    """
+    Escriu l'estat del training sense permetre que un tipus NumPy
+    faci fallar l'entrenament. Els valors NumPy (np.bool_, np.integer,
+    np.floating) es converteixen a tipus natius de Python abans del JSON.
+    """
     path = ckpt_dir / "training_status.json"
+
+    def _json_default(obj):
+        if isinstance(obj, np.generic):
+            return obj.item()
+        raise TypeError(
+            f"Object of type {obj.__class__.__name__} is not JSON serializable"
+        )
+
     try:
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        path.write_text(
+            json.dumps(payload, indent=2, default=_json_default),
+            encoding="utf-8",
+        )
     except Exception as exc:
-        print(f"  Warning: could not write training_status.json: {exc}")
+        # El JSON és només informació auxiliar: mai ha d'aturar el training.
+        print(f"  Avís: no s'ha pogut escriure training_status.json: {exc}")
 
 
 # ── Entrenament ───────────────────────────────────────────────────────────────
