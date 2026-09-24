@@ -27,7 +27,7 @@ from lstm.src.config import (
     EMPIRICAL_MASK_PROB,
     TTA_N_PASSES, TTA_NOISE_STD,
 )
-from lstm.src.dataset import TimeSeriesDataset, generate_mask
+from lstm.src.dataset import TimeSeriesDataset, InferenceDataset, generate_mask
 from lstm.src.model   import TemporalMaskedAutoencoder, count_parameters
 
 
@@ -91,6 +91,50 @@ class WarmupCosineScheduler:
         self.lr           = float(state["lr"])
         self.step_count   = int(state["step_count"])
         # total_steps es queda el de __init__ (n_epochs * batches d'aquesta sessió)
+
+
+def evaluate_real_mae(model: TemporalMaskedAutoencoder,
+                      real_val: dict,
+                      device: torch.device,
+                      batch_size: int) -> float:
+    """
+    MAE real en watts sobre un conjunt de validació amb forats i ground
+    truth AUTÈNTICS (no simulats). A diferència de la loss de validació
+    habitual (que usa màscares sintètiques sobre corbes completes), això
+    mesura exactament el que avalua el challenge: error sobre posicions
+    que eren NaN de veritat a `holed_`, en watts, no en espai normalitzat.
+
+    Sense TTA (una sola passada): es crida una vegada per època, així que
+    cal que sigui ràpida; el TTA es reserva per la inferència final.
+
+    real_val : dict amb claus
+        "norm"  (Nv, T) float32 — input normalitzat, NaN substituïts per 0
+        "nanmask" (Nv, T) bool  — True on el valor original era NaN
+        "raw"   (Nv, T) float32 — valors originals (amb NaN) per calcular profile
+        "meds", "mads" (Nv,)    — per desnormalitzar
+        "y_raw" (Nv, T) float32 — ground truth en watts
+        "global_stats" dict
+    """
+    loader = DataLoader(
+        InferenceDataset(real_val["norm"], real_val["nanmask"],
+                         curves_raw=real_val["raw"],
+                         global_stats=real_val["global_stats"]),
+        batch_size=batch_size, shuffle=False, num_workers=0)
+
+    preds_norm = predict_batch(model, loader, device)
+    preds_raw  = preds_norm * real_val["mads"][:, None] + real_val["meds"][:, None]
+    preds_raw  = np.clip(preds_raw, 0, None)
+
+    # Defensa extra: si alguna corba té ground truth incomplet (y_raw amb
+    # NaN, p.ex. holed_192), l'excloem del càlcul en lloc de deixar que un
+    # sol NaN converteixi tot el MAE en NaN (el que bloquejaria per sempre
+    # la selecció de "millor checkpoint").
+    mask  = real_val["nanmask"] & ~np.isnan(real_val["y_raw"])
+    denom = mask.sum()
+    if denom == 0:
+        return float("nan")
+    errors = np.abs(preds_raw - real_val["y_raw"]) * mask
+    return float(errors.sum() / denom)
 
 
 def build_fixed_masks(n: int, t: int, mask_dist: dict | None,
@@ -235,11 +279,19 @@ def train(curves_norm: np.ndarray,
           global_stats: dict | None = None,
           mask_dist: dict | None = None,
           resume_from: str | Path | None = None,
-          ckpt_dir: str | Path | None = None) -> TemporalMaskedAutoencoder:
+          ckpt_dir: str | Path | None = None,
+          real_val: dict | None = None) -> TemporalMaskedAutoencoder:
     """
     Entrena el Transformer.
 
     use_hybrid_loss=False per defecte: la mètrica del challenge és MAE en watts.
+
+    real_val : dict opcional (veure evaluate_real_mae) amb un subconjunt de
+        corbes `holed_` reals (amb el seu ground truth, mai usades per
+        entrenar) que substitueix la loss de validació sintètica com a
+        criteri de "millor checkpoint" i d'early stopping. Sense això, es
+        fa servir la loss de validació sobre màscares simulades (com abans
+        de v3.1.1), que és només una aproximació del rendiment real.
 
     Checkpoints
     -----------
@@ -297,6 +349,12 @@ def train(curves_norm: np.ndarray,
     print(f"Loss: {loss_name}")
     print(f"Mask distribution: {'empirical (60%) + uniform (40%)' if mask_dist else 'uniform'}")
     print("Val masks: FROZEN (reproducible early stopping)")
+    if real_val is not None:
+        print(f"Model selection: MAE real (W) sobre {len(real_val['nanmask']):,} corbes "
+              f"holed_ mai vistes en entrenament")
+    else:
+        print("Model selection: val loss proxy (màscares sintètiques) — "
+              "considera passar real_val per un criteri més fiable")
     print(f"ckpt_dir: {ckpt_dir_path}")
     print(f"best weights (predicció): {best_weights_path}")
 
@@ -350,9 +408,10 @@ def train(curves_norm: np.ndarray,
                 load_model_weights(best_weights_path, model, device)
             return model
 
-    print(f"\n{'Epoch':>6} {'Train Loss':>11} {'Val Loss':>10} "
+    real_mae_header = f" {'Real MAE(W)':>11}" if real_val is not None else ""
+    print(f"\n{'Epoch':>6} {'Train Loss':>11} {'Val Loss':>10}{real_mae_header} "
           f"{'LR':>10} {'Time':>7} {'':>10}")
-    print("─" * 64)
+    print("─" * (64 + len(real_mae_header)))
 
     for epoch in range(start_epoch, n_epochs + 1):
         t0 = time.time()
@@ -392,11 +451,25 @@ def train(curves_norm: np.ndarray,
         train_loss = np.mean(train_losses)
         val_loss   = np.mean(val_losses)
         lr_now     = optimizer.param_groups[0]["lr"]
-        elapsed    = time.time() - t0
 
-        improved = bool(val_loss < best_val_mae)
+        # NOU: si tenim un conjunt de validació real (corbes holed_ amb
+        # ground truth, mai usades en entrenament), és el que decideix quin
+        # checkpoint és el "millor" — no la loss sobre màscares sintètiques.
+        # És el mateix tipus d'error (MAE en watts, sobre punts que eren NaN
+        # de veritat) que avalua el challenge, així que evita triar un
+        # checkpoint que sembla bo a la tasca proxy però no generalitza.
+        if real_val is not None:
+            real_mae = evaluate_real_mae(model, real_val, device, BATCH_SIZE)
+            monitor_metric = real_mae
+        else:
+            real_mae = None
+            monitor_metric = val_loss
+
+        elapsed = time.time() - t0
+
+        improved = bool(monitor_metric < best_val_mae)
         if improved:
-            best_val_mae  = val_loss
+            best_val_mae  = monitor_metric
             patience_left = PATIENCE
             status = "✓ millor"
         else:
@@ -416,6 +489,7 @@ def train(curves_norm: np.ndarray,
             "patience_left": patience_left,
             "train_loss": float(train_loss),
             "val_loss": float(val_loss),
+            "real_val_mae": float(real_mae) if real_mae is not None else None,
             "rng_state": _capture_rng_state(),
             "dataset_rng_state": full_ds.rng.bit_generator.state,
         }
@@ -443,14 +517,18 @@ def train(curves_norm: np.ndarray,
             "improved_this_epoch": bool(improved),
         })
 
-        print(f"{epoch:>6} {train_loss:>11.4f} {val_loss:>10.4f} "
+        real_mae_col = f" {real_mae:>11.2f}" if real_mae is not None else ""
+        print(f"{epoch:>6} {train_loss:>11.4f} {val_loss:>10.4f}{real_mae_col} "
               f"{lr_now:>10.2e} {elapsed:>6.1f}s {status:>10}")
 
         if patience_left == 0:
             print(f"\nEarly stopping a l'època {epoch}.")
             break
 
-    print(f"\nMillor Val Loss ({loss_name}): {best_val_mae:.4f}")
+    if real_val is not None:
+        print(f"\nMillor MAE real (W) sobre validació honesta: {best_val_mae:.2f}")
+    else:
+        print(f"\nMillor Val Loss ({loss_name}): {best_val_mae:.4f}")
     print(f"Checkpoint complet (resume): {latest_path}")
     print(f"Millor checkpoint complet:   {best_full_path}")
     print(f"Pesos predicció:             {best_weights_path}")

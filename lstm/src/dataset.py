@@ -248,6 +248,14 @@ def fit_mask_distribution(holed_curves: np.ndarray) -> dict:
     Estima:
       - ratio_per_curve: distribució del % de NaN per corba
       - block_lengths: distribució de longituds de blocs consecutius
+      - block_start_hours: hora del dia (0..47) on comença cada bloc
+
+    NOU: els blocs LLARGS (≥ 4h) no cauen en posicions aleatòries — el
+    ~50% comencen exactament a mitjanit (hour_idx=0) i la resta en
+    fronteres de 4h. Són talls de comunicació del comptador, no soroll
+    puntual (que sí és ~uniforme al llarg del dia). Guardem block_lengths
+    i block_start_hours EN PARELLS (mateix índex = mateix bloc real) perquè
+    es puguin mostrejar junts i preservar aquesta correlació longitud↔hora.
 
     Aquesta distribució es fa servir per generar màscares d'entrenament que
     imiten les del test, en lloc d'usar masking uniforme.
@@ -258,8 +266,9 @@ def fit_mask_distribution(holed_curves: np.ndarray) -> dict:
     # Ratio per corba
     ratios = nan_mask.sum(axis=1) / T
 
-    # Longituds de blocs consecutius
-    block_lengths = []
+    # Longituds de blocs consecutius + hora d'inici (per preservar l'alineament)
+    block_lengths     = []
+    block_start_hours = []
     for i in range(N):
         m = nan_mask[i]
         # Buscar runs de True
@@ -270,12 +279,19 @@ def fit_mask_distribution(holed_curves: np.ndarray) -> dict:
         ends   = np.where(diff == -1)[0]
         for s, e in zip(starts, ends):
             block_lengths.append(e - s)
+            block_start_hours.append(int(s % STEPS_PER_DAY))
 
-    block_lengths = np.array(block_lengths) if len(block_lengths) > 0 else np.array([10])
+    if len(block_lengths) > 0:
+        block_lengths     = np.array(block_lengths)
+        block_start_hours = np.array(block_start_hours)
+    else:
+        block_lengths     = np.array([10])
+        block_start_hours = np.array([0])
 
     return {
         "ratios": ratios,
         "block_lengths": block_lengths,
+        "block_start_hours": block_start_hours,
     }
 
 
@@ -303,7 +319,12 @@ def generate_mask_empirical(T: int, mask_dist: dict,
 
     Mostreja:
       1. Un ratio target (de la distribució real de ratios)
-      2. Longituds de blocs (de la distribució real de blocs)
+      2. Parells (longitud, hora d'inici) de blocs reals, junts — no per
+         separat. Els blocs llargs (talls de comunicació) s'alineen a
+         mitjanit/fronteres de 4h de veritat; els curts (soroll puntual)
+         són ~uniformes. Mostrejant el parell sencer d'un bloc real es
+         preserva aquesta correlació sense haver de distingir "curt" de
+         "llarg" a mà. Només aleatoritzem quin DIA li toca dins la corba.
     """
     mask = np.zeros(T, dtype=bool)
 
@@ -312,11 +333,20 @@ def generate_mask_empirical(T: int, mask_dist: dict,
     target_count = max(1, int(T * target_ratio))
 
     block_lengths = mask_dist["block_lengths"]
+    start_hours   = mask_dist.get("block_start_hours")
+    n_blocks      = len(block_lengths)
+    n_days        = max(1, T // STEPS_PER_DAY)
 
     while mask.sum() < target_count:
-        # Cada bloc d'una longitud mostrejada de la distribució real
-        length = int(rng.choice(block_lengths))
-        start  = int(rng.integers(0, T))
+        idx    = int(rng.integers(0, n_blocks))
+        length = int(block_lengths[idx])
+
+        if start_hours is not None:
+            day   = int(rng.integers(0, n_days))
+            start = day * STEPS_PER_DAY + int(start_hours[idx])
+        else:
+            start = int(rng.integers(0, T))
+
         mask[start:min(start + length, T)] = True
 
     return mask

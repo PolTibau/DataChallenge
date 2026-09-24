@@ -37,7 +37,7 @@ from torch.utils.data import DataLoader
 from lstm.src.config import (
     X_TRAIN_PATH, X_TEST_PATH, Y_TRAIN_PATH,
     PRED_TRAIN_PATH, OUT_DIR, CKPT_DIR,
-    BATCH_SIZE, DEBUG, DEBUG_N_CURVES, DEBUG_N_EPOCHS,
+    BATCH_SIZE, DEBUG, DEBUG_N_CURVES, DEBUG_N_EPOCHS, RANDOM_SEED,
 )
 from lstm.src.model   import TemporalMaskedAutoencoder
 from lstm.src.trainer import train, predict_batch_tta
@@ -49,6 +49,12 @@ from src.data_loader  import load_train, load_test, save_submission
 from src.evaluator    import print_summary
 
 COMBINED_CKPT = CKPT_DIR / "best_model_v3.pt"
+
+# Quantes de les 1.000 corbes holed_ de train es reserven com a validació
+# HONESTA (mai vistes en entrenament, ni com a corba ni com a estadística
+# de màscara). La resta (1000 - N_REAL_VAL) s'afegeixen com a corbes de
+# referència addicionals, ja que en coneixem el valor complet via y_train.
+N_REAL_VAL = 200
 
 # ── Resume (Kaggle / local) ───────────────────────────────────────────────────
 # False = entrenament des de zero. True = continua des de RESUME_FROM.
@@ -164,6 +170,60 @@ def main():
           f"med={int(np.median(mask_dist['block_lengths']))} "
           f"max={mask_dist['block_lengths'].max()}")
 
+    # ── 5b. Validació real + corbes extra d'entrenament ───────────────────────
+    # Fins ara el "millor checkpoint" es triava per la loss de validació sobre
+    # màscares SINTÈTIQUES aplicades a corbes completes (ref_). És una bona
+    # aproximació però no és la mètrica del challenge: no usa mai els 1.000
+    # parells (holed_, y_train) que sí que tenim etiquetats de veritat.
+    #
+    # Aquí en reservem 200 com a validació honesta (holed_ real + ground
+    # truth real, MAI usades en entrenament) i afegim les 800 restants com a
+    # corbes de referència addicionals -en sabem el valor complet via
+    # y_train, així que es poden usar igual que qualsevol altra corba ref_,
+    # emmascarant-les sintèticament a cada època.
+    print(f"\n── Separant validació real ({N_REAL_VAL}) de corbes extra "
+          f"d'entrenament ──")
+    holed_cols = X_holed_train.columns.to_numpy()
+
+    # Algunes corbes (p.ex. holed_192) tenen y_train gairebé tot NaN — el
+    # ground truth és incomplet i no es pot fer servir per validar. Si una
+    # d'aquestes caigués al grup de validació honesta, el MAE real donaria
+    # NaN a cada època i el "improved" no seria mai True → cap checkpoint
+    # es guardaria mai. Les excloem del sorteig de validació (encara poden
+    # anar al grup "extra", on normalize_robust ja les descarta soles).
+    y_nan_cols = y_train.columns[y_train.isna().any(axis=0)].to_numpy()
+    if len(y_nan_cols) > 0:
+        print(f"  Avís: {len(y_nan_cols)} corba(es) amb y_train incomplet, "
+              f"excloses de la validació real: {list(y_nan_cols)}")
+    clean_cols = holed_cols[~np.isin(holed_cols, y_nan_cols)]
+    bad_cols   = holed_cols[np.isin(holed_cols, y_nan_cols)]
+
+    perm       = np.random.default_rng(RANDOM_SEED + 123).permutation(len(clean_cols))
+    val_cols   = clean_cols[perm[:N_REAL_VAL]]
+    extra_cols = np.concatenate([clean_cols[perm[N_REAL_VAL:]], bad_cols])
+
+    X_val_holed = X_holed_train[val_cols]
+    y_val       = y_train[val_cols]
+    val_norm, val_nanmask, val_meds, val_mads = normalize_holed_robust(X_val_holed)
+
+    real_val = {
+        "norm":         val_norm,
+        "nanmask":      val_nanmask,
+        "raw":          X_val_holed.values.T.astype(np.float32),
+        "meds":         val_meds,
+        "mads":         val_mads,
+        "y_raw":        y_val.values.T.astype(np.float32),
+        "global_stats": global_stats,
+    }
+    print(f"  Validació real: {len(val_cols)} corbes (mai vistes en l'entrenament)")
+
+    y_extra_raw            = y_train[extra_cols].values.T.astype(np.float32)
+    extra_norm, extra_raw  = normalize_robust(y_extra_raw, "y_train holed_ (extra)")
+    ref_combined            = np.concatenate([ref_combined, extra_norm], axis=0)
+    ref_combined_raw        = np.concatenate([ref_combined_raw, extra_raw], axis=0)
+    print(f"  Entrenament addicional: {len(extra_cols)} corbes completades (y_train)")
+    print(f"  Total corbes d'entrenament: {len(ref_combined):,}")
+
     if DEBUG:
         ref_combined     = ref_combined[:DEBUG_N_CURVES]
         ref_combined_raw = ref_combined_raw[:DEBUG_N_CURVES]
@@ -185,7 +245,8 @@ def main():
                   global_stats=global_stats,
                   mask_dist=mask_dist,
                   resume_from=resume_from,
-                  ckpt_dir=ckpt_save_dir)
+                  ckpt_dir=ckpt_save_dir,
+                  real_val=real_val)
 
     print(f"\nPesos millor model (predicció): {COMBINED_CKPT}")
     print(f"Checkpoints complets:           {ckpt_save_dir}")
@@ -224,14 +285,26 @@ def main():
                                columns=X_holed_train.columns,
                                index=X_holed_train.index)
 
-    print_summary(y_train, y_pred, nan_mask_df, model_name="Transformer v3.1")
+    print("\n  NOTA: 800 d'aquestes 1.000 corbes s'han fet servir com a corbes "
+          "de referència ADDICIONALS a l'entrenament (secció 5b) — el model ja "
+          "n'ha après el valor real sota altres màscares, així que el seu MAE "
+          "aquí és optimista. Les 200 restants no s'han fet servir mai i són "
+          "la mesura fiable (és la mateixa validació usada per triar el "
+          "millor checkpoint durant l'entrenament).")
+
+    print_summary(y_train[val_cols], y_pred[val_cols], nan_mask_df[val_cols],
+                  model_name="Transformer v3.1 — validació HONESTA (200)")
+    print_summary(y_train[extra_cols], y_pred[extra_cols], nan_mask_df[extra_cols],
+                  model_name="Transformer v3.1 — vistes en training (800, optimista)")
+    print_summary(y_train, y_pred, nan_mask_df,
+                  model_name="Transformer v3.1 — total 1000 (biaixat a l'alça)")
 
     if not DEBUG:
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         timestamps = X_holed_train.index.strftime("%Y-%m-%d %H:%M:%S").values
         save_submission(y_pred, PRED_TRAIN_PATH, timestamps)
 
-    print(f"\nAra executa: python -m lstm.main_predict_combined")
+    print(f"\nAra executa: python -m lstm.main_predict")
 
     if _windows:
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)

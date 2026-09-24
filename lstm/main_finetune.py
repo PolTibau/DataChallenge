@@ -237,8 +237,8 @@ def main():
 
     print(f"\nFine-tuning completat.")
     print(f"Model guardat a: {FINETUNE_CKPT}")
-    print(f"\nPer inferir amb aquest checkpoint, actualitza "
-          f"main_predict_combined.py o carrega '{FINETUNE_CKPT.name}'.")
+    print(f"\nmain_predict.py detecta '{FINETUNE_CKPT.name}' automàticament "
+          f"i el farà servir en lloc de '{PRETRAIN_CKPT.name}'.")
 
     if _windows:
         ctypes.windll.kernel32.SetThreadExecutionState(ES_CONTINUOUS)
