@@ -48,11 +48,11 @@ N_NEIGHBOURS = 50        # veïns per construir la corba de "consumidors semblan
 # 2 = un token per hora; 1 = un token per mitja hora (~4x més lent i més memòria).
 # Es pot canviar sense editar:  LSTM_PATCH_SIZE=1 LSTM_BATCH_SIZE=32 python -m ...
 PATCH_SIZE   = int(os.environ.get("LSTM_PATCH_SIZE", "2"))
-D_MODEL      = 192
-N_HEADS      = 8
+D_MODEL      = 256       # v3: 192; sense sobreajust i amb 16 canals d'entrada, pugem capacitat
+N_HEADS      = 8         # 32 dimensions per cap
 N_ENC_LAYERS = 4
 N_DEC_LAYERS = 4
-D_FF         = 768
+D_FF         = 1024      # 4 × D_MODEL
 DROPOUT      = 0.1
 MAX_SEQ_LEN  = 2048
 PROFILE_DIM  = 10        # 9 de v3 + sensibilitat a la temperatura
