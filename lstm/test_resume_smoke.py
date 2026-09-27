@@ -1,6 +1,4 @@
-"""Smoke test: train a few epochs, resume, verify scheduler/patience/best weights."""
-from __future__ import annotations
-
+"""Smoke test v4: pipeline amb dades sintètiques, 2 èpoques, reprendre fins a 4, ensemble."""
 import sys
 import tempfile
 from pathlib import Path
@@ -8,83 +6,73 @@ from pathlib import Path
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lstm.src.trainer import (
-    train, load_training_checkpoint, load_model_weights, is_full_training_checkpoint,
-)
-from lstm.src.model import TemporalMaskedAutoencoder
 from lstm.src.config import SEQ_LEN
+from lstm.src.dataset import TimeSeriesDataset, InferenceDataset, fit_mask_distribution
+from lstm.src.model import default_model_kwargs
+from lstm.src.pipeline import (
+    build_pool, pool_neighbour_channels, holed_context, to_watts, gap_lengths,
+    linear_interp, tune_blend, apply_blend,
+)
+from lstm.src.trainer import (
+    train, build_fixed_masks, load_training_checkpoint, make_loader, predict_ensemble,
+)
+
+
+def synthetic_curves(n: int, rng) -> np.ndarray:
+    t = np.arange(SEQ_LEN)
+    daily = 1 + 0.6 * np.sin(2 * np.pi * (t % 48) / 48)
+    level = rng.lognormal(5, 1, size=(n, 1))
+    return (level * daily * rng.gamma(2, 0.5, size=(n, SEQ_LEN))).astype(np.float32)
 
 
 def main() -> None:
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device("cpu")
     rng = np.random.default_rng(0)
-    curves = rng.normal(size=(24, SEQ_LEN)).astype(np.float32)
+    refs = synthetic_curves(120, rng)
+    holed = synthetic_curves(20, rng)
+    truth = holed.copy()
+    holed[rng.random(holed.shape) < 0.12] = np.nan
+    holed[:, 480:528] = np.nan                      # un dia sencer
 
+    pool = build_pool(refs)
+    nb_norm, nb_anom = pool_neighbour_channels(pool, device)
+    mask_dist = fit_mask_distribution(holed)
+    ctx = holed_context(holed, pool, device)
+    real_val = {"dataset": InferenceDataset(ctx["norm"], ctx["mask"], ctx["profiles"],
+                                            ctx["nb_norm"], ctx["nb_anom"], pool["population"]),
+                "meds": ctx["meds"], "mads": ctx["mads"], "nanmask": ctx["mask"], "y_raw": truth}
+    common = dict(curves_norm=pool["norm"], profiles=pool["profiles"],
+                  weights=pool["mads"] / pool["mads"].mean(), nb_norm=nb_norm, nb_anom=nb_anom,
+                  population=pool["population"], mask_dist=mask_dist)
+    train_ds = TimeSeriesDataset(indices=np.arange(100), **common)
+    val_ds = TimeSeriesDataset(indices=np.arange(100, 120), augment=False,
+                               fixed_masks=build_fixed_masks(20, SEQ_LEN, mask_dist, 1), **common)
+    sample = train_ds[0]
+    print("input", tuple(sample["input"].shape), "profile", tuple(sample["profile"].shape))
+
+    kwargs = default_model_kwargs()
+    kwargs.update(d_model=32, n_heads=4, n_enc=1, n_dec=1, d_ff=64)
     with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
-        weights = tmp / "best_model_v3.pt"
+        run = Path(tmp)
+        _, snaps = train(train_ds, val_ds, real_val, device, run, kwargs, n_epochs=2)
+        ck = load_training_checkpoint(run / "latest.pt", device)
+        assert ck["epoch"] == 2 and (run / "best_model.pt").exists()
+        _, snaps = train(train_ds, val_ds, real_val, device, run, kwargs, n_epochs=4,
+                         resume_from=run / "latest.pt")
+        ck = load_training_checkpoint(run / "latest.pt", device)
+        assert ck["epoch"] == 4, ck["epoch"]
+        assert 1 <= len(snaps) <= 3 and all((run / s["file"]).exists() for s in snaps)
 
-        print("=== Fase 1: entrenar 2 èpoques des de zero ===")
-        train(curves, device,
-              n_epochs_override=2,
-              ckpt_path=weights,
-              ckpt_dir=tmp,
-              resume_from=None)
-
-        latest = tmp / "latest.pt"
-        assert latest.exists(), "latest.pt no s'ha creat"
-        assert weights.exists(), "best_model_v3.pt no s'ha creat"
-
-        ckpt = load_training_checkpoint(latest, device)
-        assert ckpt["epoch"] == 2, f"esperava epoch=2, got {ckpt['epoch']}"
-        assert "optimizer_state_dict" in ckpt
-        assert "scheduler_state_dict" in ckpt
-        step_before = ckpt["scheduler_state_dict"]["step_count"]
-        best_before = ckpt["best_val_loss"]
-        pat_before = ckpt["patience_left"]
-        print(f"  latest.pt epoch={ckpt['epoch']} step_count={step_before} "
-              f"best_val={best_before:.4f} patience_left={pat_before}")
-
-        raw_weights = torch.load(weights, map_location="cpu", weights_only=True)
-        assert not is_full_training_checkpoint(raw_weights), \
-            "best_model_v3.pt ha de ser només state_dict"
-        print("  best_model_v3.pt és un state_dict (predicció) ✓")
-
-        print("\n=== Fase 1b: checkpoint antic no reanudable ===")
-        old = tmp / "old_weights_only.pt"
-        torch.save(raw_weights, old)
-        try:
-            load_training_checkpoint(old, device)
-            raise AssertionError("havia de fallar amb checkpoint antic")
-        except ValueError as exc:
-            assert "no reanudable" in str(exc) or "antic" in str(exc)
-            print(f"  missatge clar ✓  ({str(exc)[:80]}...)")
-
-        print("\n=== Fase 2: resume → èpoques 3 i 4 ===")
-        train(curves, device,
-              n_epochs_override=4,
-              ckpt_path=weights,
-              ckpt_dir=tmp,
-              resume_from=latest)
-
-        ckpt2 = load_training_checkpoint(latest, device)
-        assert ckpt2["epoch"] == 4, f"esperava epoch=4 després del resume, got {ckpt2['epoch']}"
-        step_after = ckpt2["scheduler_state_dict"]["step_count"]
-        assert step_after > step_before, \
-            f"scheduler no ha avançat: {step_before} → {step_after}"
-        print(f"  latest.pt epoch={ckpt2['epoch']} step_count={step_after} "
-              f"(era {step_before}) patience_left={ckpt2['patience_left']}")
-        print("  resume ha continuat a l'època 3 (no des de 1) ✓")
-        print("  optimizer/scheduler restaurats i han avançat ✓")
-        print("  best_val_loss/patience presents al checkpoint ✓")
-
-        model = TemporalMaskedAutoencoder().to(device)
-        load_model_weights(weights, model, device)
-        print("  load_model_weights(best_model_v3.pt) ✓")
-
+        loader = make_loader(real_val["dataset"])
+        pred = to_watts(predict_ensemble([(kwargs, run / s["file"]) for s in snaps],
+                                         loader, device), ctx, holed)
+        runlen, interp = gap_lengths(ctx["mask"]), linear_interp(holed)
+        w = tune_blend(pred, interp, runlen, truth)
+        out = apply_blend(pred, interp, runlen, w)
+        assert out.shape == holed.shape and not np.isnan(out).any()
+        print("blend weights", w)
     print("\nSMOKE TEST OK")
 
 

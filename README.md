@@ -68,11 +68,20 @@ python -m knn.main_train
 # Generar submissió test
 python -m knn.main_predict
 
-# ── Transformer ───────────────────────────────────────────────
-# Entrenar (~30-60 min amb GPU)
-python -m lstm.main_train
+# ── Transformer v4 ────────────────────────────────────────────
+# Prova ràpida (2 èpoques, poques corbes)
+LSTM_DEBUG=1 python -m lstm.main_train_combined
 
-# Generar submissió test
+# Entrenar (es desa a lstm/checkpoints/v4/seed42/)
+python -m lstm.main_train_combined
+# Entrenaments addicionals per a l'ensemble (opcional)
+python -m lstm.main_train_combined --seed 43
+# Variant amb un token per mitja hora (es desa a seed44_p1/, ~4x més lent)
+LSTM_PATCH_SIZE=1 LSTM_BATCH_SIZE=32 python -m lstm.main_train_combined --seed 44
+# Reprendre un entrenament interromput
+python -m lstm.main_train_combined --seed 42 --resume
+
+# Submissió: combina tots els seed*/ → outputs/lstm/y_pred_test_v4.csv
 python -m lstm.main_predict
 ```
 
@@ -83,11 +92,15 @@ Cerca les K corbes de referència més similars (usant distància Manhattan
 sobre els timesteps vàlids) i omple els forats amb una mitjana ponderada
 per rang. Ràpid i interpretable, però tracta cada timestep de forma independent.
 
-### Transformer (Temporal Masked Autoencoder)
-Aprèn la dinàmica temporal de les corbes entrenant sobre les 20.000 corbes
-de referència senceres. Usa masking aleatori durant l'entrenament per aprendre
-a reconstruir forats. L'atenció global permet capturar dependències de llarg
-termini (patrons diaris, setmanals).
+### Transformer v4 (Temporal Masked Autoencoder)
+Entrena sobre les ~58.000 corbes de referència (train + test) amb forats
+simulats que imiten els reals. Per a cada mitja hora rep, a més del valor,
+16 canals de context (`lstm/src/context.py`): màscara, interpolació, mateixa
+hora ±1 dia/setmana, perfil habitual del consumidor, corba de població i
+corba dels 50 consumidors més semblants. La pèrdua es pondera per l'escala
+de cada corba (≈ MAE en watts) i el millor model es tria amb les 999 corbes
+holed_ de train etiquetades. La predicció promitja els millors checkpoints
+de tots els entrenaments i barreja amb interpolació als forats d'1-2 punts.
 
 ## Mètrica
 MAE en watts, calculat NOMÉS sobre els punts que eren NaN originalment.
