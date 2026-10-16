@@ -1,3 +1,4 @@
+# Data and generated outputs (large; data comes from the challenge website)
 data/
 outputs/
 *.csv
@@ -5,16 +6,30 @@ outputs/
 *.pkl
 *.png
 
-# Python bytecode / cache — no s'ha de versionar
+# Model checkpoints (large; produced by training)
+*.pt
+lstm/checkpoints/
+
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+.pytest_cache/
+.ruff_cache/
+
+# Virtual environments and local configuration
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 
-# Checkpoints d'entrenament (grans; es descarreguen de RunPod a mà)
-lstm/checkpoints/v4/
-lstm/checkpoints/checkpoints/
+# Notebooks, logs, editors, OS
+.ipynb_checkpoints/
+*.log
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
