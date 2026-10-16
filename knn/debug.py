@@ -7,7 +7,7 @@ Script de diagnòstic. Executa'l i envia'm la sortida completa.
 
 import pandas as pd
 import numpy as np
-from src.config import X_TRAIN_PATH, Y_TRAIN_PATH
+from knn.core.config import X_TRAIN_PATH, Y_TRAIN_PATH
 
 print("=" * 60)
 print("DIAGNÒSTIC — llegint fitxers directament")
@@ -55,7 +55,7 @@ idx_match = (X_holed.index == y_train.index).all()
 print(f"\nX_holed.index == y_train.index: {idx_match}")
 
 # ── 5. Comprovar la nan_mask ──────────────────────────────────
-from src.preprocessor import get_nan_mask
+from knn.core.preprocessor import get_nan_mask
 nan_mask = get_nan_mask(X_holed)
 print(f"\nnan_mask shape: {nan_mask.shape}")
 print(f"nan_mask True count: {nan_mask.sum().sum():,}")
@@ -78,8 +78,8 @@ print(f"  y_train[col] valors on mask=True: {y_train[col].values[mask_col][:5]}"
 print("\n" + "=" * 60)
 print("Provant impute_column sobre holed_1...")
 print("=" * 60)
-from src.preprocessor import normalize
-from src.config import K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA, MIN_OVERLAP
+from knn.core.preprocessor import normalize
+from knn.core.config import K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA, MIN_OVERLAP
 
 X_ref_norm = normalize(X_ref).values.T.astype(float) if False else \
              X_ref.select_dtypes("number").to_numpy(dtype=float).T
