@@ -15,8 +15,7 @@ Masked Autoencoder.
   population curve, 50 most similar consumers; see `lstm/src/context.py`). The
   best checkpoints of all runs are averaged and blended with interpolation for
   gaps of 1-2 points.
-- **Metric**: MAE in watts, computed only on points that were originally NaN
-  (`src/evaluator.py`).
+- **Metric**: MAE in watts, computed only on points that were originally NaN.
 
 > The Transformer package is named `lstm` for historical reasons; it does not use an LSTM.
 
@@ -26,8 +25,8 @@ Masked Autoencoder.
   tqdm, scikit-learn, torch, optuna).
 - A CUDA GPU is recommended for Transformer training.
 - Input data (not included, too large): download `X_train.csv`, `y_train.csv` and
-  `X_test.csv` from the data challenge website and place them in `data/`.
-  <!-- TODO: add the data challenge URL -->
+  `X_test.csv` from the Enedis data challenge page and place them in `data/` at
+  the repository root.
 
 ## Installation
 
@@ -82,7 +81,7 @@ Environment variables read by `lstm/src/config.py`: `LSTM_PATCH_SIZE`,
 ├── data/                 # input CSVs (not versioned)
 ├── outputs/              # predictions (not versioned)
 ├── notebooks/            # exploratory analysis
-├── src/                  # shared code: data loading, evaluation
+├── src/                  # shared code: data loading
 ├── knn/
 │   ├── core/             # config, preprocessing, KNN algorithm
 │   ├── main_train.py
@@ -100,7 +99,11 @@ Environment variables read by `lstm/src/config.py`: `LSTM_PATCH_SIZE`,
 ## Tests
 
 `lstm/test_resume_smoke.py` is a smoke test on synthetic data (short training,
-resume, ensemble). <!-- TODO: confirm the command; the file adds the repo root to sys.path, so `python lstm/test_resume_smoke.py` is expected to work -->
+resume, ensemble):
+
+```bash
+python -m lstm.test_resume_smoke
+```
 
 ## Contributing
 
