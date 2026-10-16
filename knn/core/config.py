@@ -7,9 +7,9 @@ Paràmetres globals del projecte. Toca aquí per experimentar.
 from pathlib import Path
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-ROOT_DIR = Path(__file__).resolve().parents[1]
+ROOT_DIR = Path(__file__).resolve().parents[2]
 DATA_DIR = ROOT_DIR / "data"
-OUT_DIR  = ROOT_DIR / "outputs"
+OUT_DIR  = ROOT_DIR / "outputs" / "knn"
 
 # Fitxers d'entrada en format CSV
 X_TRAIN_PATH = DATA_DIR / "X_train.csv"

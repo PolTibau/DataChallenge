@@ -55,7 +55,7 @@ Normalitzacions (norm_method)
 
 Execució:
     pip install optuna
-    python optimize_hyperparams.py
+    python -m knn.optimize_hyperparams
 
 Genera:
     outputs/hyperparam_results.csv  → historial complet de trials
@@ -76,7 +76,7 @@ import optuna
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-from src.config      import X_TRAIN_PATH, Y_TRAIN_PATH, OUT_DIR
+from knn.core.config      import X_TRAIN_PATH, Y_TRAIN_PATH, OUT_DIR
 from src.data_loader import load_train
 
 # ── Configuració ──────────────────────────────────────────────────────────────

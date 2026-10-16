@@ -4,7 +4,7 @@ main_train.py
 Avaluació sobre el conjunt de train.
 
 Execució:
-    python main_train.py
+    python -m knn.main_train
 
 Genera:
     outputs/y_pred_train.csv
@@ -13,13 +13,13 @@ Genera:
 import pandas as pd
 import numpy as np
 
-from src.config import (
+from knn.core.config import (
     X_TRAIN_PATH, Y_TRAIN_PATH, PRED_TRAIN_PATH, OUT_DIR,
     K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA, INDEX_COL,
 )
 from src.data_loader  import load_train
-from src.preprocessor import get_nan_mask
-from src.knn_imputer  import impute_all
+from knn.core.preprocessor import get_nan_mask
+from knn.core.knn_imputer  import impute_all
 
 
 def compute_mae(y_train, y_pred, nan_mask):

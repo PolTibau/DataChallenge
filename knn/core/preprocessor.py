@@ -13,7 +13,7 @@ Normalitzem cada columna (corba) de forma independent.
 
 import numpy as np
 import pandas as pd
-from src.config import NORMALIZE, NORM_METHOD
+from knn.core.config import NORMALIZE, NORM_METHOD
 
 
 def zscore_normalize(df: pd.DataFrame) -> pd.DataFrame:

@@ -4,7 +4,7 @@ main_predict.py
 Genera la predicció final sobre el conjunt de test.
 
 Execució:
-    python main_predict.py
+    python -m knn.main_predict
 
 Genera:
     outputs/y_pred_test.csv  ← fitxer de submissió al challenge
@@ -12,12 +12,12 @@ Genera:
 
 import pandas as pd
 
-from src.config import (
+from knn.core.config import (
     X_TEST_PATH, PRED_TEST_PATH, OUT_DIR,
     K_NEIGHBORS, DISTANCE_METRIC, WEIGHTING, GAUSSIAN_SIGMA, INDEX_COL,
 )
 from src.data_loader import load_test
-from src.knn_imputer import impute_all
+from knn.core.knn_imputer import impute_all
 
 
 def main():

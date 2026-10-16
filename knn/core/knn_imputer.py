@@ -23,11 +23,11 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
-from src.config import (
+from knn.core.config import (
     K_NEIGHBORS, MIN_OVERLAP, DISTANCE_METRIC,
     WEIGHTING, GAUSSIAN_SIGMA,
 )
-from src.preprocessor import normalize
+from knn.core.preprocessor import normalize
 
 
 def _euclidean_distances(ref_norm: np.ndarray,
