@@ -1,9 +1,9 @@
 """
-lstm/src/dataset.py — v4
-------------------------
+transformer/core/dataset.py
+---------------------------
 Fitxa del consumidor (profile), màscares d'entrenament i Datasets de PyTorch.
 
-v4:
+Inclou:
   - Fitxa de 10 indicadors: s'hi afegeix la sensibilitat a la temperatura
     (com varia el consum diari de la corba quan varia el de la població)
   - Els Datasets retornen 16 canals d'entrada per instant (veure context.py)
@@ -16,11 +16,11 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
-from lstm.src.config import (
+from transformer.core.config import (
     STEPS_PER_DAY, MASK_RATIO, MASK_MIN_LEN, MASK_MAX_LEN,
     MASK_BLOCK_PROB, EMPIRICAL_MASK_PROB, PROFILE_DIM,
 )
-from lstm.src.context import (
+from transformer.core.context import (
     SLOT, WEEKEND, N_DAYS_FULL, sample_features,
 )
 

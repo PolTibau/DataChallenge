@@ -1,7 +1,7 @@
 """
 src/data_loader.py
 ------------------
-Càrrega de dades compartida. Sense canvis respecte v2.
+Càrrega de dades compartida.
 """
 
 import numpy as np

@@ -1,9 +1,9 @@
 """
-lstm/src/trainer.py — v4
-------------------------
+transformer/core/trainer.py
+---------------------------
 Entrenament i inferència del Transformer.
 
-v4:
+Inclou:
   - Pèrdua MAE ponderada per l'escala de cada corba (≈ MAE en watts)
   - Selecció del millor model per MAE real (W) sobre les corbes holed_ etiquetades
   - Es conserven els N_SNAPSHOTS millors checkpoints (snap_eXXX.pt) per fer-ne
@@ -21,12 +21,12 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 
-from lstm.src.config import (
+from transformer.core.config import (
     BATCH_SIZE, N_EPOCHS, LR, LR_WARMUP_STEPS, WEIGHT_DECAY, GRAD_CLIP,
     PATIENCE, RANDOM_SEED, NUM_WORKERS, N_SNAPSHOTS,
 )
-from lstm.src.dataset import generate_mask, worker_init_fn
-from lstm.src.model import TemporalMaskedAutoencoder, count_parameters
+from transformer.core.dataset import generate_mask, worker_init_fn
+from transformer.core.model import TemporalMaskedAutoencoder, count_parameters
 
 
 # ── Pèrdua ────────────────────────────────────────────────────────────────────

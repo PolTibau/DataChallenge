@@ -1,6 +1,6 @@
 """
-lstm/src/context.py — v4
-------------------------
+transformer/core/context.py
+---------------------------
 Informació de context que acompanya cada corba, instant a instant.
 
 A més del valor de la corba, el model rep per a cada mitja hora:
@@ -27,7 +27,7 @@ import warnings
 import numpy as np
 import torch
 
-from lstm.src.config import SEQ_LEN, STEPS_PER_DAY, START_WEEKDAY, N_NEIGHBOURS
+from transformer.core.config import SEQ_LEN, STEPS_PER_DAY, START_WEEKDAY, N_NEIGHBOURS
 
 N_CHANNELS  = 16
 N_DAYS_FULL = SEQ_LEN // STEPS_PER_DAY          # 22 dies complets (+1 punt final)

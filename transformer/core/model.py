@@ -1,9 +1,9 @@
 """
-lstm/src/model.py — v4
-----------------------
+transformer/core/model.py
+-------------------------
 Temporal Masked Autoencoder basat en Transformer.
 
-v4: l'entrada és (B, T, C) — el valor de la corba més els canals de context
+L'entrada és (B, T, C) — el valor de la corba més els canals de context
 (veure context.py). PATCH_SIZE es configura a config.py (2 = un token per
 hora, 1 = un token per mitja hora).
 
@@ -21,11 +21,11 @@ import math
 import torch
 import torch.nn as nn
 
-from lstm.src.config import (
+from transformer.core.config import (
     D_MODEL, N_HEADS, N_ENC_LAYERS, N_DEC_LAYERS, D_FF, DROPOUT, MAX_SEQ_LEN,
     SEQ_LEN, PROFILE_DIM, PATCH_SIZE, STEPS_PER_DAY, START_WEEKDAY,
 )
-from lstm.src.context import N_CHANNELS
+from transformer.core.context import N_CHANNELS
 
 
 def default_model_kwargs() -> dict:

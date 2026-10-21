@@ -1,4 +1,4 @@
-"""Smoke test v4: pipeline amb dades sintètiques, 2 èpoques, reprendre fins a 4, ensemble."""
+"""Smoke test: pipeline amb dades sintètiques, 2 èpoques, reprendre fins a 4, ensemble."""
 import sys
 import tempfile
 from pathlib import Path
@@ -8,14 +8,14 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from lstm.src.config import SEQ_LEN
-from lstm.src.dataset import TimeSeriesDataset, InferenceDataset, fit_mask_distribution
-from lstm.src.model import default_model_kwargs
-from lstm.src.pipeline import (
+from transformer.core.config import SEQ_LEN
+from transformer.core.dataset import TimeSeriesDataset, InferenceDataset, fit_mask_distribution
+from transformer.core.model import default_model_kwargs
+from transformer.core.pipeline import (
     build_pool, pool_neighbour_channels, holed_context, to_watts, gap_lengths,
     linear_interp, tune_blend, apply_blend,
 )
-from lstm.src.trainer import (
+from transformer.core.trainer import (
     train, build_fixed_masks, load_training_checkpoint, make_loader, predict_ensemble,
 )
 

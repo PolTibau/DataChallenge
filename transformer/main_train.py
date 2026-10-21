@@ -1,14 +1,14 @@
 """
-lstm/main_train_combined.py — v4
---------------------------------
-Entrena el Transformer v4 sobre les referències de train + test.
+transformer/main_train.py
+-------------------------
+Entrena el Transformer sobre les referències de train + test.
 
 Execució (des de l'arrel del repositori):
-    python -m lstm.main_train_combined                 # llavor per defecte (42)
-    python -m lstm.main_train_combined --seed 43       # un altre entrenament per a l'ensemble
-    python -m lstm.main_train_combined --resume        # reprèn lstm/checkpoints/v4/seed42/latest.pt
+    python -m transformer.main_train                 # llavor per defecte (42)
+    python -m transformer.main_train --seed 43       # un altre entrenament per a l'ensemble
+    python -m transformer.main_train --resume        # reprèn transformer/checkpoints/seed42/latest.pt
 
-Cada entrenament es desa a lstm/checkpoints/v4/seed<N>/ (best_model.pt,
+Cada entrenament es desa a transformer/checkpoints/seed<N>/ (best_model.pt,
 snap_eXXX.pt, meta.json). La predicció final (main_predict) combina tots els
 entrenaments que trobi en aquesta carpeta.
 """
@@ -23,20 +23,20 @@ import numpy as np
 import pandas as pd
 import torch
 
-from lstm.src.config import (
+from transformer.core.config import (
     RUNS_DIR, OUT_DIR, SEQ_LEN, VAL_SPLIT, RANDOM_SEED, LOSS_SCALE_POWER,
     N_NEIGHBOURS, DEBUG, DEBUG_N_CURVES, DEBUG_N_EPOCHS, DEBUG_N_VAL,
 )
-from lstm.src.dataset import (
+from transformer.core.dataset import (
     TimeSeriesDataset, InferenceDataset, fit_mask_distribution,
 )
-from lstm.src.model import default_model_kwargs
-from lstm.src.pipeline import (
+from transformer.core.model import default_model_kwargs
+from transformer.core.pipeline import (
     load_data, labeled_validation, build_pool, pool_neighbour_channels,
     holed_context, gap_lengths, linear_interp, to_watts, tune_blend,
     apply_blend, breakdown, print_breakdown,
 )
-from lstm.src.trainer import (
+from transformer.core.trainer import (
     train, build_fixed_masks, make_loader, predict, predict_ensemble, _write_json,
 )
 
@@ -138,8 +138,8 @@ def main():
         OUT_DIR.mkdir(parents=True, exist_ok=True)
         idx = data["X_holed_train"].index
         pd.DataFrame(final.T, index=idx, columns=val["cols"]).to_csv(
-            OUT_DIR / f"y_pred_train_v4_seed{seed}.csv")
-    print(f"\nFet. Per generar la submissió: python -m lstm.main_predict")
+            OUT_DIR / f"y_pred_train_seed{seed}.csv")
+    print(f"\nFet. Per generar la submissió: python -m transformer.main_predict")
 
 
 if __name__ == "__main__":

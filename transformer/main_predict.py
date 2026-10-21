@@ -1,21 +1,21 @@
 """
-lstm/main_predict.py — v4
--------------------------
-Genera la submissió combinant tots els entrenaments v4 disponibles.
+transformer/main_predict.py
+---------------------------
+Genera la submissió combinant tots els entrenaments disponibles.
 
-  1. Troba els entrenaments a lstm/checkpoints/v4/seed*/ (o els de --runs)
+  1. Troba els entrenaments a transformer/checkpoints/seed*/ (o els de --runs)
   2. Fa la mitjana de les prediccions de tots els seus millors checkpoints
   3. Ajusta la barreja amb interpolació (forats d'1-2 punts) sobre les 999
      corbes holed_ etiquetades de train, i n'informa l'MAE
   4. Aplica el mateix a X_test i desa la submissió
 
 Execució:
-    python -m lstm.main_predict                       # tots els seed*/
-    python -m lstm.main_predict --runs seed42 seed43  # només aquests
+    python -m transformer.main_predict                       # tots els seed*/
+    python -m transformer.main_predict --runs seed42 seed43  # només aquests
 
 Genera:
-    outputs/lstm/y_pred_test_v4.csv   ← fitxer a penjar
-    outputs/lstm/y_pred_train_v4.csv  ← prediccions de validació (per analitzar)
+    outputs/transformer/y_pred_test.csv   ← fitxer a penjar
+    outputs/transformer/y_pred_train.csv  ← prediccions de validació (per analitzar)
 """
 
 import argparse
@@ -29,13 +29,13 @@ import numpy as np
 import pandas as pd
 import torch
 
-from lstm.src.config import RUNS_DIR, OUT_DIR, PRED_TEST_PATH, PRED_VAL_PATH
-from lstm.src.dataset import InferenceDataset
-from lstm.src.pipeline import (
+from transformer.core.config import RUNS_DIR, OUT_DIR, PRED_TEST_PATH, PRED_VAL_PATH
+from transformer.core.dataset import InferenceDataset
+from transformer.core.pipeline import (
     load_data, labeled_validation, build_pool, holed_context, gap_lengths,
     linear_interp, to_watts, tune_blend, apply_blend, breakdown, print_breakdown,
 )
-from lstm.src.trainer import make_loader, predict_ensemble
+from transformer.core.trainer import make_loader, predict_ensemble
 from src.data_loader import save_submission
 
 
@@ -54,7 +54,7 @@ def collect_specs(run_names: list[str] | None) -> list:
               f"(MAE val: {[round(s['mae'], 2) for s in snaps]})")
     if not specs:
         raise FileNotFoundError(
-            f"No hi ha cap entrenament a {RUNS_DIR}. Executa: python -m lstm.main_train_combined")
+            f"No hi ha cap entrenament a {RUNS_DIR}. Executa: python -m transformer.main_train")
     return specs
 
 

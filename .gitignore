@@ -8,7 +8,7 @@ outputs/
 
 # Model checkpoints (large; produced by training)
 *.pt
-lstm/checkpoints/
+transformer/checkpoints/
 
 # Python
 __pycache__/

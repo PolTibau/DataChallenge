@@ -1,6 +1,6 @@
 """
-lstm/src/pipeline.py — v4
--------------------------
+transformer/core/pipeline.py
+----------------------------
 Preparació de dades i postprocés compartits entre entrenament i predicció,
 perquè tots dos construeixin exactament el mateix context.
 """
@@ -9,12 +9,12 @@ import numpy as np
 import pandas as pd
 import torch
 
-from lstm.src.config import X_TRAIN_PATH, Y_TRAIN_PATH, X_TEST_PATH
-from lstm.src.context import (
+from transformer.core.config import X_TRAIN_PATH, Y_TRAIN_PATH, X_TEST_PATH
+from transformer.core.context import (
     build_population, typical_profiles, expand_profiles, descriptors,
     find_neighbours, neighbour_channels,
 )
-from lstm.src.dataset import (
+from transformer.core.dataset import (
     robust_stats, profile_features, fit_profile_stats, normalize_profiles,
 )
 from src.data_loader import load_train, load_test
